@@ -1,0 +1,28 @@
+name = "snap-it-worker"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ALLOWED_ORIGINS = "https://snap-it-and-forget-it.pages.dev,http://localhost:5173"
+APP_ENV = "production"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "snap-it-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[[r2_buckets]]
+binding = "DOCUMENTS"
+bucket_name = "snap-it-documents"
+
+# Secrets (set via: wrangler secret put GEMINI_API_KEY)
+# GEMINI_API_KEY
+# ALLOWED_ORIGINS (override for production)
+
+[dev]
+port = 8787
+local_protocol = "http"
+
+[build]
+command = "npm run build"
