@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Worker Tests (SQLite Runtime)
+    name: Worker Tests (Money + Ledger + Refund + Split + SQLite Runtime)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -25,24 +25,13 @@ jobs:
       - name: Install dependencies (includes better-sqlite3)
         run: npm install
 
-      - name: TypeScript type check
-        run: npx tsc --noEmit
-        continue-on-error: true  # Type errors don't block runtime tests
+      - name: Run all test suites
+        run: npx vitest run --reporter=verbose
 
-      - name: Money arithmetic unit tests
-        run: npx vitest run src/tests/money.test.ts --reporter=verbose
-
-      - name: Ledger unit tests (pure functions)
-        run: npx vitest run src/tests/ledger.test.ts --reporter=verbose
-
-      - name: Refund unit tests (pure functions)
-        run: npx vitest run src/tests/refund.test.ts --reporter=verbose
-
-      - name: Split unit tests (pure functions)
-        run: npx vitest run src/tests/split.test.ts --reporter=verbose
-
-      - name: Runtime tests T7A-T7G + REFUND-01/02/03 (real SQLite)
-        run: npx vitest run src/tests/runtime/refund.runtime.test.ts --reporter=verbose
-
-      - name: Runtime tests TS1-TS7 splits (real SQLite)
-        run: npx vitest run src/tests/runtime/split.runtime.test.ts --reporter=verbose
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: worker/test-results/
+          if-no-files-found: ignore
