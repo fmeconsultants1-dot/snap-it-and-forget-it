@@ -1,46 +1,32 @@
 /**
  * SplitService.ts
- * FME Mission 001 — Snap It & Forget It
+ * FME Mission 001 - Snap It & Forget It
  *
- * Real transaction splitting.
+ * Real transaction splitting with deterministic money arithmetic.
  *
- * One scanned receipt may contain multiple categories:
- *   - Food Inventory
- *   - Cleaning Supplies
- *   - Office Supplies
- *   - Equipment
- *   - Personal Purchase (non-business, excluded from ITC)
+ * PERSONAL PURCHASE ACCOUNTING:
+ * A personal purchase on a business receipt is NOT merely excluded from ITC.
+ * It must be fully accounted for:
+ *   - The allocated cost (subtotal + proportional non-recoverable tax) posts
+ *     to an expense account marked as personal
+ *   - is_business_use = 0 in split_lines
+ *   - itc_eligible = 0 (no ITC regardless of registration)
+ *   - The FULL receipt total still credits the settlement account
+ *   - The personal portion is visible in the ledger for owner review
+ *   - Audit trail records personal allocation amount
  *
- * Splitting rules:
- *   1. SUM(split_line.allocated_amount) = original ledger_entry.amount
- *      If the split amounts don’t sum exactly, the engine rejects the split.
- *   2. GST/PST is allocated proportionally across splits:
- *      split_gst_portion = (split_subtotal / total_subtotal) * total_gst
- *   3. Personal-use splits (is_business_use = 0) get NO ITC.
- *      Their GST portion goes to 5010-Operating Expenses (or category account),
- *      not to 1310-GST Recoverable.
- *   4. Each split produces its own pair of journal lines:
- *      DR [expense account for split]  [split amount incl non-recoverable tax]
- *      DR 1310-GST Recoverable         [ITC-eligible GST portion, if any]
- *      CR [settlement account]          [split total with tax]
- *      ———
- *      All split lines from a single receipt share ONE credit line
- *      to the settlement account (the full receipt total).
- *   5. The PARENT journal entry carries the settlement credit line.
- *      Individual split debit lines compose the expense side.
- *   6. SUM(all split debit lines) = settlement credit line. Must hold.
+ * ATOMICITY: D1 batch() wraps all journal line writes.
+ * If any line fails, all writes for this split are rolled back.
+ * No orphan journal entries, no orphan split_lines.
  *
- * Lifecycle:
- *   Phase 1: Scan creates a single-line ledger_entry (NEEDS_REVIEW)
- *   Phase 2: User (or accountant) applies a split via POST /api/ledger/:id/split
- *   Phase 3: SplitService replaces the original journal lines with split lines
- *            and inserts split_lines records
- *   Phase 4: Entry status moves from NEEDS_REVIEW to NEEDS_REVIEW (split pending approval)
- *   Phase 5: Approve action finalises the split
+ * BALANCE INVARIANT: SUM(DR) = SUM(CR) enforced before any write.
+ * Violation throws - no partial database write ever occurs.
  */
 
+import { splitProportional, toCents, toDollars, verifySumExact } from '../lib/money';
+import { determineITC } from './GSTService';
 import type { BusinessConfig } from './LedgerService';
-import { determineITC, type ITCConfig } from './GSTService';
+import type { ITCConfig } from './GSTService';
 
 function generateId() { return crypto.randomUUID(); }
 function round2(n: number) { return Math.round(n * 100) / 100; }
@@ -49,8 +35,8 @@ export interface SplitLineInput {
   description: string;
   expense_account_code: string;
   expense_account_name: string;
-  allocated_subtotal: number;   // Pre-tax amount for this split
-  is_business_use: boolean;     // false = personal, no ITC
+  allocated_subtotal: number;
+  is_business_use: boolean;
   category?: string;
   memo?: string;
 }
@@ -58,12 +44,11 @@ export interface SplitLineInput {
 export interface SplitInput {
   ledgerEntryId: string;
   splits: SplitLineInput[];
-  // Tax totals from original extraction (used for proportional allocation)
   total_gst: number;
   total_hst: number;
   total_pst: number;
-  total_subtotal: number;   // Pre-tax total from extraction
-  total_with_tax: number;   // Final receipt total (must match ledger_entry.amount)
+  total_subtotal: number;
+  total_with_tax: number;
   settlement_account_code: string;
   settlement_account_name: string;
   date: string;
@@ -80,7 +65,6 @@ export interface SplitLineResult {
   total_with_tax: number;
   is_business_use: boolean;
   itc_eligible: number;
-  debit_lines: Array<{ account_code: string; account_name: string; amount: number; is_itc: boolean }>;
 }
 
 export interface SplitResult {
@@ -92,6 +76,7 @@ export interface SplitResult {
   isBalanced: boolean;
   itcTotal: number;
   personalUseTotal: number;
+  personalUseCount: number;
 }
 
 export class SplitService {
@@ -106,20 +91,25 @@ export class SplitService {
   }
 
   async applySplit(input: SplitInput): Promise<SplitResult> {
+    if (!input.splits || input.splits.length < 1) {
+      throw new Error('Split requires at least 1 line');
+    }
+
     // 1. Load ledger entry
     const le = await this.db.prepare(
       'SELECT * FROM ledger_entries WHERE id = ?'
     ).bind(input.ledgerEntryId).first() as any;
-
     if (!le) throw new Error(`Ledger entry not found: ${input.ledgerEntryId}`);
-    if (le.status === 'APPROVED') throw new Error('Cannot split an approved entry');
+    if (le.status === 'APPROVED') throw new Error('Cannot split an approved entry. Void and re-enter.');
 
-    // 2. Validate split amounts sum to total
+    // 2. Validate: split subtotals must sum to total_subtotal (cent-precise)
     const splitSubtotalSum = round2(input.splits.reduce((s, sp) => s + sp.allocated_subtotal, 0));
-    if (Math.abs(splitSubtotalSum - input.total_subtotal) > 0.02) {
+    const diff = Math.abs(toCents(splitSubtotalSum) - toCents(input.total_subtotal));
+    if (diff > 1) {
       throw new Error(
-        `Split subtotals (${splitSubtotalSum}) do not sum to total subtotal (${input.total_subtotal}). ` +
-        `Difference: ${round2(Math.abs(splitSubtotalSum - input.total_subtotal))}`
+        `Split subtotals (${splitSubtotalSum}) do not sum to total subtotal ` +
+        `(${input.total_subtotal}). Difference: ${diff} cents. ` +
+        `Adjust split amounts so they sum exactly to the pre-tax receipt subtotal.`
       );
     }
 
@@ -127,119 +117,110 @@ export class SplitService {
     const je = await this.db.prepare(
       'SELECT * FROM journal_entries WHERE ledger_entry_id = ? ORDER BY created_at DESC LIMIT 1'
     ).bind(input.ledgerEntryId).first() as any;
-
     if (!je) throw new Error(`No journal entry for ledger entry: ${input.ledgerEntryId}`);
 
-    // 4. Delete existing journal lines (they will be replaced by split lines)
-    await this.db.prepare(
-      'DELETE FROM journal_lines WHERE journal_entry_id = ?'
-    ).bind(je.id).run();
+    // 4. Allocate taxes proportionally using deterministic cent arithmetic
+    const weights = input.splits.map(s => s.allocated_subtotal);
+    const gstParts = splitProportional(input.total_gst, weights);
+    const hstParts = splitProportional(input.total_hst, weights);
+    const pstParts = splitProportional(input.total_pst, weights);
 
-    // Also delete existing split_lines if re-splitting
-    await this.db.prepare(
-      'DELETE FROM split_lines WHERE ledger_entry_id = ?'
-    ).bind(input.ledgerEntryId).run();
+    // Verify allocations sum exactly to totals
+    for (const [parts, total, name] of [
+      [gstParts, input.total_gst, 'GST'],
+      [hstParts, input.total_hst, 'HST'],
+      [pstParts, input.total_pst, 'PST'],
+    ] as [number[], number, string][]) {
+      const check = verifySumExact(parts, total);
+      if (!check.valid) {
+        throw new Error(`${name} allocation sum mismatch: ${check.actual} != ${check.expected} (${check.diffCents} cents)`);
+      }
+    }
 
-    // 5. Build split journal lines
-    const allJournalLines: Array<{
-      account_code: string; account_name: string;
-      debit: number; credit: number; memo: string | null;
+    // 5. Build all journal lines
+    const journalLines: Array<{
+      account_code: string;
+      account_name: string;
+      debit: number;
+      credit: number;
+      memo: string;
     }> = [];
 
     const splitLineResults: SplitLineResult[] = [];
-    let lineOrder = 1;
     let itcTotal = 0;
     let personalUseTotal = 0;
+    let personalUseCount = 0;
 
-    for (const split of input.splits) {
-      // Proportional tax allocation
-      const proportion = input.total_subtotal > 0
-        ? split.allocated_subtotal / input.total_subtotal
-        : 1 / input.splits.length;
-
-      const splitGst = round2(input.total_gst * proportion);
-      const splitHst = round2(input.total_hst * proportion);
-      const splitPst = round2(input.total_pst * proportion);
-      const splitRecoverable = splitGst + splitHst;
+    for (let i = 0; i < input.splits.length; i++) {
+      const split = input.splits[i]!;
+      const splitGst = gstParts[i]!;
+      const splitHst = hstParts[i]!;
+      const splitPst = pstParts[i]!;
+      const splitRecoverable = round2(splitGst + splitHst);
       const splitTotalWithTax = round2(split.allocated_subtotal + splitGst + splitHst + splitPst);
 
-      // ITC eligibility for this split line
+      // ITC determination per split line
+      // Personal purchases: never ITC eligible regardless of registration
       const itcDetermination = split.is_business_use
-        ? determineITC(
-            {
-              doc_type: le.entry_type,
-              tax_gst: splitGst,
-              tax_hst: splitHst,
-              tax_pst: splitPst,
-              confidence_total: 0.90, // split is manually entered — high confidence
-              date: input.date,
-              category: split.category ?? null,
-            },
-            this.itcConfig
-          )
-        : { eligible: false, flags: ['PERSONAL_USE'], recoverable_gst: 0, recoverable_hst: 0, non_recoverable_pst: splitPst, review_required: false };
+        ? determineITC({
+            doc_type: le.entry_type,
+            tax_gst: splitGst,
+            tax_hst: splitHst,
+            tax_pst: splitPst,
+            confidence_total: 0.90, // manually entered splits have high confidence
+            date: input.date,
+            category: split.category ?? null,
+          }, this.itcConfig)
+        : {
+            eligible: false,
+            flags: ['PERSONAL_USE_NOT_ITC_ELIGIBLE' as any],
+            recoverable_gst: 0,
+            recoverable_hst: 0,
+            non_recoverable_pst: splitPst,
+            review_required: false,
+          };
 
       const eligibleITC = itcDetermination.eligible
         ? round2(itcDetermination.recoverable_gst + itcDetermination.recoverable_hst)
         : 0;
 
-      // Debit: expense line
-      // If ITC eligible: expense debit = subtotal + PST (GST/HST goes to recoverable account)
-      // If NOT ITC eligible: expense debit = full split total with tax (all tax is a cost)
+      // PERSONAL PURCHASE ACCOUNTING:
+      // Full cost (subtotal + all tax) goes to expense account.
+      // No ITC line. Flagged is_business_use=0 in split_lines.
+      // Still posts to the ledger - not silently dropped.
+      if (!split.is_business_use) {
+        personalUseTotal = round2(personalUseTotal + splitTotalWithTax);
+        personalUseCount++;
+      }
+
+      // Expense debit:
+      // ITC registered + eligible: debit = subtotal + PST (GST/HST to recoverable)
+      // Not ITC eligible (incl personal): debit = full split total with all tax
       const expenseDebit = itcDetermination.eligible
         ? round2(split.allocated_subtotal + splitPst)
         : splitTotalWithTax;
 
-      allJournalLines.push({
+      journalLines.push({
         account_code: split.expense_account_code,
         account_name: split.expense_account_name,
         debit: expenseDebit,
         credit: 0,
-        memo: split.description,
+        memo: split.description + (split.is_business_use ? '' : ' [PERSONAL]'),
       });
 
-      // Debit: GST/HST Recoverable (only when ITC eligible)
+      // GST/HST Recoverable (business use + ITC eligible only)
       if (itcDetermination.eligible && splitRecoverable > 0) {
-        allJournalLines.push({
+        journalLines.push({
           account_code: '1310',
           account_name: 'GST/HST Recoverable',
           debit: splitRecoverable,
           credit: 0,
           memo: `ITC: ${split.description}`,
         });
+        itcTotal = round2(itcTotal + splitRecoverable);
       }
 
-      if (!split.is_business_use) personalUseTotal = round2(personalUseTotal + splitTotalWithTax);
-      itcTotal = round2(itcTotal + eligibleITC);
-
-      // 6. Insert split_lines record
       const splitLineId = generateId();
-      await this.db.prepare(`
-        INSERT INTO split_lines
-          (id, ledger_entry_id, journal_entry_id, line_order, description,
-           expense_account_code, expense_account_name,
-           allocated_amount, gst_portion, hst_portion, pst_portion,
-           total_with_tax, is_business_use, itc_eligible, category, memo, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-      `).bind(
-        splitLineId,
-        input.ledgerEntryId,
-        je.id,
-        lineOrder++,
-        split.description,
-        split.expense_account_code,
-        split.expense_account_name,
-        split.allocated_subtotal,
-        splitGst,
-        splitHst,
-        splitPst,
-        splitTotalWithTax,
-        split.is_business_use ? 1 : 0,
-        eligibleITC,
-        split.category ?? null,
-        split.memo ?? null
-      ).run();
-
       splitLineResults.push({
         id: splitLineId,
         description: split.description,
@@ -251,17 +232,11 @@ export class SplitService {
         total_with_tax: splitTotalWithTax,
         is_business_use: split.is_business_use,
         itc_eligible: eligibleITC,
-        debit_lines: [
-          { account_code: split.expense_account_code, account_name: split.expense_account_name, amount: expenseDebit, is_itc: false },
-          ...(itcDetermination.eligible && splitRecoverable > 0
-            ? [{ account_code: '1310', account_name: 'GST/HST Recoverable', amount: splitRecoverable, is_itc: true }]
-            : []),
-        ],
       });
     }
 
-    // 7. Single settlement credit line (full receipt total)
-    allJournalLines.push({
+    // Single settlement credit line for full receipt total
+    journalLines.push({
       account_code: input.settlement_account_code,
       account_name: input.settlement_account_name,
       debit: 0,
@@ -269,70 +244,118 @@ export class SplitService {
       memo: 'Split receipt settlement',
     });
 
-    // 8. Balance check (hard invariant)
-    const totalDebits = round2(allJournalLines.reduce((s, l) => s + l.debit, 0));
-    const totalCredits = round2(allJournalLines.reduce((s, l) => s + l.credit, 0));
-    const diff = Math.abs(Math.round((totalDebits - totalCredits) * 100));
-
-    if (diff > 1) {
+    // 6. Balance check BEFORE any write
+    const totalDebits = round2(journalLines.reduce((s, l) => s + l.debit, 0));
+    const totalCredits = round2(journalLines.reduce((s, l) => s + l.credit, 0));
+    const balDiff = Math.abs(Math.round((totalDebits - totalCredits) * 100));
+    if (balDiff > 1) {
       throw new Error(
-        `Split balance violation: DR ${totalDebits.toFixed(2)} ≠ CR ${totalCredits.toFixed(2)} ` +
-        `(diff ${diff} cents). Check split amounts and tax allocations.`
+        `Split balance violation: DR ${totalDebits.toFixed(2)} != CR ${totalCredits.toFixed(2)} ` +
+        `(${balDiff} cents). No database write performed. ` +
+        `Check split amounts and tax totals.`
       );
     }
 
-    // 9. Insert all journal lines
-    for (let i = 0; i < allJournalLines.length; i++) {
-      const line = allJournalLines[i]!;
-      await this.db.prepare(`
-        INSERT INTO journal_lines
-          (id, journal_entry_id, account_code, account_name, debit, credit, memo, line_order)
-        VALUES (?,?,?,?,?,?,?,?)
-      `).bind(
-        generateId(), je.id,
-        line.account_code, line.account_name,
-        line.debit, line.credit, line.memo, i + 1
-      ).run();
+    // 7. ATOMIC WRITE via D1 batch()
+    const statements: D1PreparedStatement[] = [];
+
+    // Delete existing journal lines and split_lines
+    statements.push(
+      this.db.prepare('DELETE FROM journal_lines WHERE journal_entry_id = ?').bind(je.id)
+    );
+    statements.push(
+      this.db.prepare('DELETE FROM split_lines WHERE ledger_entry_id = ?').bind(input.ledgerEntryId)
+    );
+
+    // Insert split_lines records
+    for (let i = 0; i < input.splits.length; i++) {
+      const split = input.splits[i]!;
+      const r = splitLineResults[i]!;
+      statements.push(
+        this.db.prepare(`
+          INSERT INTO split_lines
+            (id, ledger_entry_id, journal_entry_id, line_order, description,
+             expense_account_code, expense_account_name,
+             allocated_amount, gst_portion, hst_portion, pst_portion,
+             total_with_tax, is_business_use, itc_eligible, category, memo, created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+        `).bind(
+          r.id, input.ledgerEntryId, je.id, i + 1,
+          split.description,
+          split.expense_account_code, split.expense_account_name,
+          split.allocated_subtotal,
+          r.gst_portion, r.hst_portion, r.pst_portion,
+          r.total_with_tax,
+          split.is_business_use ? 1 : 0,
+          r.itc_eligible,
+          split.category ?? null,
+          split.memo ?? null
+        )
+      );
     }
 
-    // 10. Update journal entry totals
-    await this.db.prepare(`
-      UPDATE journal_entries
-      SET total_debits = ?, total_credits = ?, is_balanced = 1,
-          description = ?
-      WHERE id = ?
-    `).bind(
-      totalDebits, totalCredits,
-      `Split receipt (${input.splits.length} lines): ${le.entity}`,
-      je.id
-    ).run();
+    // Insert all journal lines
+    for (let i = 0; i < journalLines.length; i++) {
+      const line = journalLines[i]!;
+      statements.push(
+        this.db.prepare(`
+          INSERT INTO journal_lines
+            (id, journal_entry_id, account_code, account_name, debit, credit, memo, line_order)
+          VALUES (?,?,?,?,?,?,?,?)
+        `).bind(
+          generateId(), je.id,
+          line.account_code, line.account_name,
+          line.debit, line.credit, line.memo, i + 1
+        )
+      );
+    }
 
-    // 11. Update ledger entry review note
-    await this.db.prepare(`
-      UPDATE ledger_entries
-      SET review_note = ?
-      WHERE id = ?
-    `).bind(
-      `SPLIT:${input.splits.length} lines | ITC:${itcTotal.toFixed(2)} | Personal:${personalUseTotal.toFixed(2)}`,
-      input.ledgerEntryId
-    ).run();
+    // Update journal entry totals
+    statements.push(
+      this.db.prepare(`
+        UPDATE journal_entries
+        SET total_debits = ?, total_credits = ?, is_balanced = 1, description = ?
+        WHERE id = ?
+      `).bind(
+        totalDebits, totalCredits,
+        `Split (${input.splits.length} lines, personal: ${personalUseCount}): ${le.entity}`,
+        je.id
+      )
+    );
 
-    // 12. Audit
-    await this.db.prepare(`
-      INSERT INTO audit_log
-        (entity_type, entity_id, action, after_state, performed_at)
-      VALUES ('ledger_entries',?,?,?,datetime('now'))
-    `).bind(
-      input.ledgerEntryId,
-      'SPLIT_APPLIED',
-      JSON.stringify({
-        split_count: input.splits.length,
-        total_debits: totalDebits,
-        total_credits: totalCredits,
-        itc_total: itcTotal,
-        personal_use_total: personalUseTotal,
-      })
-    ).run();
+    // Update ledger entry review note
+    statements.push(
+      this.db.prepare(`
+        UPDATE ledger_entries SET review_note = ? WHERE id = ?
+      `).bind(
+        `SPLIT:${input.splits.length} lines | ITC:${itcTotal.toFixed(2)} | Personal:${personalUseTotal.toFixed(2)} (${personalUseCount} items)`,
+        input.ledgerEntryId
+      )
+    );
+
+    // Audit entry
+    statements.push(
+      this.db.prepare(`
+        INSERT INTO audit_log
+          (entity_type, entity_id, action, after_state, performed_at)
+        VALUES ('ledger_entries',?,?,?,datetime('now'))
+      `).bind(
+        input.ledgerEntryId,
+        'SPLIT_APPLIED',
+        JSON.stringify({
+          split_count: input.splits.length,
+          total_debits: totalDebits,
+          total_credits: totalCredits,
+          itc_total: itcTotal,
+          personal_use_total: personalUseTotal,
+          personal_use_count: personalUseCount,
+          balance_check: 'PASSED',
+        })
+      )
+    );
+
+    // Execute all atomically
+    await this.db.batch(statements);
 
     return {
       ledgerEntryId: input.ledgerEntryId,
@@ -340,9 +363,10 @@ export class SplitService {
       splitLines: splitLineResults,
       totalDebits,
       totalCredits,
-      isBalanced: diff <= 1,
+      isBalanced: balDiff <= 1,
       itcTotal,
       personalUseTotal,
+      personalUseCount,
     };
   }
 }
