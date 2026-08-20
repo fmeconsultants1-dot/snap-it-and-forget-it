@@ -1,7 +1,7 @@
 /**
  * HomePage.tsx
  * FME Mission 001 — Snap It & Forget It
- * Entry point screen. Launches camera or goes straight to ledger.
+ * Entry point screen. Launches camera, ledger, or accountant portal.
  */
 import { useNavigate } from 'react-router-dom';
 
@@ -41,6 +41,22 @@ export default function HomePage() {
         }}
       >
         View Ledger
+      </button>
+
+      <button
+        className="btn-secondary"
+        onClick={() => navigate('/accountant')}
+        style={{
+          display: 'block',
+          width: '100%',
+          textAlign: 'center',
+          marginTop: 10,
+          padding: '14px',
+          justifyContent: 'center',
+          color: 'var(--gray-light)',
+        }}
+      >
+        Accountant Portal
       </button>
     </div>
   );
