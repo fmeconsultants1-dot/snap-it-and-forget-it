@@ -7,8 +7,13 @@
     "build": "tsc",
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 execute snap-it-db --file=src/db/schema.sql",
+    "db:migrate:002": "wrangler d1 execute snap-it-db --file=src/db/migrations/002_refunds_splits.sql",
     "db:migrate:local": "wrangler d1 execute snap-it-db --local --file=src/db/schema.sql",
+    "db:migrate:002:local": "wrangler d1 execute snap-it-db --local --file=src/db/migrations/002_refunds_splits.sql",
     "test": "vitest run",
+    "test:runtime": "vitest run src/tests/runtime",
+    "test:unit": "vitest run src/tests/ledger.test.ts src/tests/refund.test.ts src/tests/split.test.ts",
+    "test:money": "vitest run src/tests/money.test.ts",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
@@ -17,6 +22,8 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241230.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "better-sqlite3": "^9.4.3",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8",
     "wrangler": "^3.101.0"
