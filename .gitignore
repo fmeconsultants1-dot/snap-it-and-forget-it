@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+.wrangler/
+
+# Secrets — NEVER commit these
+.env
+.env.local
+.env.production
+.dev.vars
+wrangler.toml.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+
+# Test artifacts
+coverage/
+.vitest/
+
+# Logs
+*.log
+logs/
+
+# Cloudflare
+.wrangler/
