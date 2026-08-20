@@ -1,0 +1,551 @@
+/* Snap It & Forget It — Global Styles
+   FME Mission 001
+   Evidence baseline: dark #000000 background, #FFB800 gold accent, white text
+   Mobile-first, no horizontal scroll, safe-area insets */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #000000;
+  --bg-card: #1a1a1a;
+  --bg-card-hover: #222222;
+  --border: #2a2a2a;
+  --gold: #FFB800;
+  --gold-dim: #cc9200;
+  --white: #ffffff;
+  --white-dim: #cccccc;
+  --gray: #666666;
+  --gray-light: #888888;
+  --orange: #FF6B00;
+  --red: #FF4444;
+  --green: #22c55e;
+  --green-dim: #16a34a;
+  --receipt-color: #FFB800;
+  --invoice-color: #FF6B00;
+  --document-color: #888888;
+  --statement-color: #888888;
+  --needs-review-bg: #3a1a00;
+  --needs-review-text: #FF8C00;
+  --draft-bg: #1a1a3a;
+  --draft-text: #8888ff;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--white);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* ---- Layout ---- */
+.screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 16px calc(16px + var(--safe-bottom));
+  padding-top: calc(12px + var(--safe-top));
+  max-width: 480px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* ---- FME Watermark ---- */
+.fme-mark {
+  position: fixed;
+  top: calc(12px + var(--safe-top));
+  right: 16px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gold);
+  letter-spacing: 0.05em;
+  z-index: 100;
+  pointer-events: none;
+}
+
+/* ---- Typography ---- */
+h1 {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--white);
+  margin-bottom: 4px;
+}
+
+h2 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--white);
+}
+
+.subtext {
+  font-size: 14px;
+  color: var(--gray-light);
+  margin-bottom: 24px;
+}
+
+/* ---- Cards ---- */
+.card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.card-vendor {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--white);
+}
+
+.card-amount {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--gold);
+}
+
+.card-amount.debit {
+  color: var(--orange);
+}
+
+.doc-type-label {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  color: var(--gold);
+  background: transparent;
+}
+
+.doc-type-label.RECEIPT { color: var(--gold); }
+.doc-type-label.INVOICE { color: var(--orange); }
+.doc-type-label.DOCUMENT { color: var(--gray-light); }
+.doc-type-label.STATEMENT { color: var(--gray-light); }
+
+.date-label {
+  font-size: 12px;
+  color: var(--gray-light);
+  margin-bottom: 12px;
+}
+
+.field-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.field-label {
+  color: var(--gray);
+  flex: 0 0 140px;
+}
+
+.field-value {
+  color: var(--white);
+  text-align: right;
+  flex: 1;
+}
+
+.field-value.gold { color: var(--gold); }
+.field-value.orange { color: var(--orange); }
+
+/* ---- Status badges ---- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.badge.NEEDS_REVIEW, .badge.NEEDS-REVIEW {
+  background: var(--needs-review-bg);
+  color: var(--needs-review-text);
+}
+
+.badge.DRAFT {
+  background: var(--draft-bg);
+  color: var(--draft-text);
+}
+
+.badge.APPROVED {
+  background: #0a2a0a;
+  color: var(--green);
+}
+
+/* ---- Primary Button ---- */
+.btn-primary {
+  display: block;
+  width: 100%;
+  padding: 18px;
+  background: var(--gold);
+  color: #000000;
+  font-size: 16px;
+  font-weight: 700;
+  border: none;
+  border-radius: 40px;
+  cursor: pointer;
+  text-align: center;
+  margin-top: 24px;
+  transition: background 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn-primary:active {
+  background: var(--gold-dim);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---- Secondary Button ---- */
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  background: transparent;
+  color: var(--white);
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn-approve {
+  padding: 6px 16px;
+  background: transparent;
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--green-dim);
+  border-radius: 20px;
+  cursor: pointer;
+  margin-top: 10px;
+}
+
+/* ---- Tab Bar ---- */
+.tab-bar {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin-bottom: 20px;
+  padding-bottom: 4px;
+}
+
+.tab-bar::-webkit-scrollbar { display: none; }
+
+.tab {
+  flex-shrink: 0;
+  padding: 7px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--white-dim);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tab.active {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+/* ---- View Toggle (Register / Accounting Journal) ---- */
+.view-toggle {
+  display: flex;
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  margin-bottom: 16px;
+}
+
+.view-toggle button {
+  flex: 1;
+  padding: 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--gray-light);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.view-toggle button.active {
+  background: var(--bg-card-hover);
+  color: var(--white);
+}
+
+/* ---- Ledger row ---- */
+.ledger-header {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--gray);
+  padding: 0 4px 8px;
+  text-transform: uppercase;
+}
+
+.ledger-row {
+  display: grid;
+  grid-template-columns: 72px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.ledger-date {
+  font-size: 13px;
+  color: var(--white);
+  font-weight: 500;
+}
+
+.ledger-type {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  color: var(--gray);
+  margin-top: 2px;
+}
+
+.ledger-entity { font-size: 14px; font-weight: 600; color: var(--white); }
+.ledger-amount { font-size: 14px; font-weight: 700; text-align: right; }
+.ledger-amount.DEBIT { color: var(--orange); }
+.ledger-amount.CREDIT { color: var(--green); }
+.ledger-amount.BALANCE { color: var(--white); }
+
+.ledger-amount-label {
+  font-size: 10px;
+  color: var(--gray);
+  text-align: right;
+  margin-top: 2px;
+}
+
+/* ---- Journal entry card ---- */
+.journal-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.journal-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.journal-meta {
+  font-size: 12px;
+  color: var(--gray-light);
+  margin-bottom: 6px;
+}
+
+.journal-vendor {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--white);
+}
+
+.journal-table {
+  width: 100%;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.journal-table th {
+  color: var(--gray);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding-bottom: 6px;
+  text-align: left;
+  font-weight: 600;
+}
+
+.journal-table th:last-child,
+.journal-table td:last-child { text-align: right; }
+
+.journal-table td { padding: 4px 0; }
+.journal-table td:nth-child(2) { color: var(--orange); font-weight: 600; }
+.journal-table td:nth-child(3) { color: var(--green); font-weight: 600; }
+
+.journal-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--green);
+}
+
+/* ---- Scan queue ---- */
+.scan-doc-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 10px;
+}
+
+.scan-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.scan-doc-name {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.scan-status-done { color: var(--green); font-size: 14px; font-weight: 600; }
+.scan-status-processing { color: var(--gold); font-size: 14px; }
+.scan-status-failed { color: var(--red); font-size: 14px; }
+
+/* ---- Camera ---- */
+.camera-container {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+}
+
+.camera-video {
+  flex: 1;
+  width: 100%;
+  object-fit: cover;
+}
+
+.camera-controls {
+  padding: 24px;
+  padding-bottom: calc(24px + var(--safe-bottom));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 40px;
+}
+
+.camera-shutter {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 4px solid var(--white);
+  background: var(--white);
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.camera-shutter:active { transform: scale(0.92); }
+
+.camera-counter {
+  position: absolute;
+  top: calc(16px + var(--safe-top));
+  left: 16px;
+  background: rgba(0,0,0,0.6);
+  color: var(--gold);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 20px;
+}
+
+.camera-done-btn {
+  position: absolute;
+  top: calc(16px + var(--safe-top));
+  right: 16px;
+  background: var(--gold);
+  color: #000;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 6px 16px;
+  border-radius: 20px;
+  border: none;
+  cursor: pointer;
+}
+
+/* ---- Spinner ---- */
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--border);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  margin: 40px auto;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- Empty state ---- */
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--gray);
+  font-size: 14px;
+}
+
+/* ---- Balanced badge ---- */
+.balanced-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--green);
+  font-weight: 600;
+}
