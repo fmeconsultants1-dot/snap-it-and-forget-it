@@ -1,0 +1,46 @@
+name: Snap It Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Worker Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Money arithmetic tests
+        run: npx vitest run src/tests/money.test.ts --reporter=verbose
+
+      - name: Ledger unit tests
+        run: npx vitest run src/tests/ledger.test.ts --reporter=verbose
+
+      - name: Refund unit tests
+        run: npx vitest run src/tests/refund.test.ts --reporter=verbose
+
+      - name: Split unit tests
+        run: npx vitest run src/tests/split.test.ts --reporter=verbose
+
+      - name: Runtime tests (SQLite)
+        run: npx vitest run src/tests/runtime/refund.runtime.test.ts src/tests/runtime/split.runtime.test.ts --reporter=verbose
