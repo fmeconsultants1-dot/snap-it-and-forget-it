@@ -4,8 +4,13 @@ compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
-ALLOWED_ORIGINS = "https://snap-it-and-forget-it.pages.dev,http://localhost:5173"
 APP_ENV = "production"
+# Override in wrangler secret for production:
+# ALLOWED_ORIGINS=https://snap-it-and-forget-it.pages.dev
+# ITC_REGISTERED=true
+# ITC_REGISTRATION_NUMBER=RT-XXXXXXXXXX
+# ITC_REGISTRATION_DATE=YYYY-MM-DD
+# PROVINCE=BC
 
 [[d1_databases]]
 binding = "DB"
@@ -16,9 +21,13 @@ database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
 binding = "DOCUMENTS"
 bucket_name = "snap-it-documents"
 
-# Secrets (set via: wrangler secret put GEMINI_API_KEY)
-# GEMINI_API_KEY
-# ALLOWED_ORIGINS (override for production)
+# Secrets — set via: wrangler secret put SECRET_NAME
+# GEMINI_API_KEY          (required)
+# ALLOWED_ORIGINS         (required) e.g. https://snap-it-and-forget-it.pages.dev,http://localhost:5173
+# ITC_REGISTERED          (optional) true|false  default: false
+# ITC_REGISTRATION_NUMBER (optional) e.g. RT-123456789
+# ITC_REGISTRATION_DATE   (optional) YYYY-MM-DD
+# PROVINCE                (optional) BC|ON|AB|SK|MB|QC|NS|NB|NL|PE  default: BC
 
 [dev]
 port = 8787
