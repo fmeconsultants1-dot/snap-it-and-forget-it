@@ -1,0 +1,425 @@
+name: Snap It — Test, Deploy, Verify
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_deploy:
+        description: 'Skip deployment (test only)'
+        required: false
+        default: 'false'
+        type: string
+
+jobs:
+  # ============================================================
+  # JOB 1: RUN ALL TESTS
+  # ============================================================
+  test:
+    name: Test Suite (Money + Ledger + Refund + Split + SQLite Runtime)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies (includes better-sqlite3)
+        run: npm install
+
+      - name: Run full test suite
+        id: test_run
+        run: |
+          npx vitest run --reporter=verbose 2>&1 | tee test-output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          exit $EXIT_CODE
+
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output-${{ github.run_number }}
+          path: worker/test-output.txt
+          if-no-files-found: ignore
+
+      - name: Post test summary
+        if: always()
+        run: |
+          echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat test-output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # JOB 2: DEPLOY TO CLOUDFLARE (only if tests pass)
+  # Requires secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+  # ============================================================
+  deploy-worker:
+    name: Deploy Worker to Cloudflare
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event.inputs.skip_deploy != 'true'
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install worker dependencies
+        run: npm install
+
+      - name: Check Cloudflare secrets
+        id: check_secrets
+        run: |
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "has_cf_token=false" >> $GITHUB_OUTPUT
+            echo "CLOUDFLARE_API_TOKEN not set — skipping deployment"
+          else
+            echo "has_cf_token=true" >> $GITHUB_OUTPUT
+          fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "has_account_id=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_account_id=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Patch wrangler.toml with D1 database_id
+        if: steps.check_secrets.outputs.has_cf_token == 'true' && secrets.D1_DATABASE_ID != ''
+        run: |
+          sed -i "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/${{ secrets.D1_DATABASE_ID }}/g" wrangler.toml
+          echo "D1 database_id patched"
+
+      - name: Create D1 database (idempotent)
+        if: steps.check_secrets.outputs.has_cf_token == 'true'
+        run: |
+          npx wrangler d1 create snap-it-db --account-id ${{ secrets.CLOUDFLARE_ACCOUNT_ID }} || echo "D1 database may already exist"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Run schema migration
+        if: steps.check_secrets.outputs.has_cf_token == 'true' && secrets.D1_DATABASE_ID != ''
+        run: |
+          npx wrangler d1 execute snap-it-db --file=src/db/schema.sql --remote || true
+          npx wrangler d1 execute snap-it-db --file=src/db/migrations/002_refunds_splits.sql --remote || true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Set Gemini secret
+        if: steps.check_secrets.outputs.has_cf_token == 'true' && secrets.GEMINI_API_KEY != ''
+        run: |
+          echo "${{ secrets.GEMINI_API_KEY }}" | npx wrangler secret put GEMINI_API_KEY
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Set ALLOWED_ORIGINS secret
+        if: steps.check_secrets.outputs.has_cf_token == 'true'
+        run: |
+          echo "https://snap-it-and-forget-it.pages.dev,http://localhost:5173" | npx wrangler secret put ALLOWED_ORIGINS
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy worker
+        if: steps.check_secrets.outputs.has_cf_token == 'true'
+        id: deploy
+        run: |
+          npx wrangler deploy --name snap-it-worker 2>&1 | tee deploy-output.txt
+          echo "worker_deployed=true" >> $GITHUB_OUTPUT
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Health check
+        if: steps.deploy.outputs.worker_deployed == 'true'
+        run: |
+          sleep 5
+          WORKER_URL=$(cat deploy-output.txt | grep -o 'https://[^[:space:]]*workers.dev' | head -1)
+          echo "Worker URL: $WORKER_URL"
+          if [ -n "$WORKER_URL" ]; then
+            HEALTH=$(curl -s "$WORKER_URL/health" || echo '{}')
+            echo "Health response: $HEALTH"
+            echo "HEALTH_RESPONSE=$HEALTH" >> $GITHUB_ENV
+            echo "WORKER_URL=$WORKER_URL" >> $GITHUB_ENV
+          fi
+
+      - name: Post deployment summary
+        if: always()
+        run: |
+          echo "## Deployment Results" >> $GITHUB_STEP_SUMMARY
+          echo "- CF Token: ${{ steps.check_secrets.outputs.has_cf_token }}" >> $GITHUB_STEP_SUMMARY
+          if [ -f deploy-output.txt ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat deploy-output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- Health: $HEALTH_RESPONSE" >> $GITHUB_STEP_SUMMARY
+          echo "- URL: $WORKER_URL" >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================
+  # JOB 3: DEPLOY FRONTEND
+  # ============================================================
+  deploy-frontend:
+    name: Deploy Frontend to Cloudflare Pages
+    needs: [test, deploy-worker]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event.inputs.skip_deploy != 'true'
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Check secrets
+        id: check
+        run: |
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "has_token=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_token=true" >> $GITHUB_OUTPUT
+          fi
+          if [ -z "${{ secrets.VITE_API_URL }}" ]; then
+            echo "api_url=https://snap-it-worker.fmeconsultants1-dot.workers.dev" >> $GITHUB_OUTPUT
+          else
+            echo "api_url=${{ secrets.VITE_API_URL }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build frontend
+        if: steps.check.outputs.has_token == 'true'
+        run: |
+          echo "VITE_API_URL=${{ steps.check.outputs.api_url }}" > .env.production
+          npm run build
+        env:
+          VITE_API_URL: ${{ steps.check.outputs.api_url }}
+
+      - name: Deploy to Cloudflare Pages
+        if: steps.check.outputs.has_token == 'true'
+        run: |
+          npx wrangler pages deploy dist \
+            --project-name=snap-it-and-forget-it \
+            --branch=main 2>&1 | tee pages-output.txt
+          cat pages-output.txt
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Post frontend summary
+        if: always()
+        run: |
+          echo "## Frontend Deployment" >> $GITHUB_STEP_SUMMARY
+          if [ -f pages-output.txt ]; then
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat pages-output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ============================================================
+  # JOB 4: POST-DEPLOY VERIFICATION (acceptance gates)
+  # ============================================================
+  verify:
+    name: Acceptance Gate Verification
+    needs: [deploy-worker, deploy-frontend]
+    runs-on: ubuntu-latest
+    if: always() && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate 1 — Health check
+        id: gate1
+        run: |
+          WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            WORKER_URL="${{ secrets.WORKER_URL }}"
+          fi
+          HEALTH=$(curl -s --max-time 10 "$WORKER_URL/health" || echo '{"status":"unreachable"}')
+          echo "Health: $HEALTH"
+          echo "health_response=$HEALTH" >> $GITHUB_OUTPUT
+          if echo "$HEALTH" | grep -q '"status":"ok"'; then
+            echo "gate1=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "gate1=FAIL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gate 2 — Full watchdog health
+        id: gate2
+        run: |
+          WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            WORKER_URL="${{ secrets.WORKER_URL }}"
+          fi
+          FULL=$(curl -s --max-time 10 "$WORKER_URL/health/full" || echo '{"status":"unreachable"}')
+          echo "Full health: $FULL"
+          if echo "$FULL" | grep -q '"db":true'; then
+            echo "gate2=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "gate2=FAIL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gate 3 — Accounts endpoint (chart of accounts seeded)
+        id: gate3
+        run: |
+          WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            WORKER_URL="${{ secrets.WORKER_URL }}"
+          fi
+          ACCTS=$(curl -s --max-time 10 "$WORKER_URL/api/accounts" || echo '{}')
+          echo "Accounts: $ACCTS"
+          COUNT=$(echo "$ACCTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('accounts',[])))" 2>/dev/null || echo 0)
+          echo "Account count: $COUNT"
+          if [ "$COUNT" -ge 17 ]; then
+            echo "gate3=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "gate3=FAIL (got $COUNT accounts, expected >= 17)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gate 4 — Scan run creation
+        id: gate4
+        run: |
+          WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            WORKER_URL="${{ secrets.WORKER_URL }}"
+          fi
+          RUN=$(curl -s --max-time 10 -X POST -H "Content-Type: application/json" \
+            -d '{"documentCount":1}' "$WORKER_URL/api/scan/run" || echo '{}')
+          echo "Scan run: $RUN"
+          RUN_ID=$(echo "$RUN" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('runId',''))" 2>/dev/null || echo '')
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          if [ -n "$RUN_ID" ]; then
+            echo "gate4=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "gate4=FAIL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gate 5 — Ledger endpoint reachable
+        id: gate5
+        run: |
+          WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            WORKER_URL="${{ secrets.WORKER_URL }}"
+          fi
+          LEDGER=$(curl -s --max-time 10 "$WORKER_URL/api/ledger" || echo '{}')
+          if echo "$LEDGER" | grep -q 'entries'; then
+            echo "gate5=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "gate5=FAIL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gate 6 — Refund guard endpoint reachable
+        id: gate6
+        run: |
+          WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            WORKER_URL="${{ secrets.WORKER_URL }}"
+          fi
+          # Use a fake ID — expect 404 (endpoint reachable)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            "$WORKER_URL/api/refund/guard/test-id?amount=0")
+          if [ "$STATUS" = "404" ] || [ "$STATUS" = "200" ]; then
+            echo "gate6=PASS (HTTP $STATUS)" >> $GITHUB_OUTPUT
+          else
+            echo "gate6=FAIL (HTTP $STATUS)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gate 7 — Export endpoint reachable
+        id: gate7
+        run: |
+          WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            WORKER_URL="${{ secrets.WORKER_URL }}"
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            "$WORKER_URL/api/export/ledger?format=csv")
+          if [ "$STATUS" = "200" ]; then
+            echo "gate7=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "gate7=FAIL (HTTP $STATUS)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gate 8 — Tax summary endpoint reachable
+        id: gate8
+        run: |
+          WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            WORKER_URL="${{ secrets.WORKER_URL }}"
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            "$WORKER_URL/api/tax/summary?dateFrom=2026-01-01&dateTo=2026-12-31")
+          if [ "$STATUS" = "200" ]; then
+            echo "gate8=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "gate8=FAIL (HTTP $STATUS)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gate 9 — AP summary endpoint reachable
+        id: gate9
+        run: |
+          WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            WORKER_URL="${{ secrets.WORKER_URL }}"
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            "$WORKER_URL/api/ap/summary")
+          if [ "$STATUS" = "200" ]; then
+            echo "gate9=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "gate9=FAIL (HTTP $STATUS)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Gate 10 — Audit endpoint reachable
+        id: gate10
+        run: |
+          WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+          if [ -n "${{ secrets.WORKER_URL }}" ]; then
+            WORKER_URL="${{ secrets.WORKER_URL }}"
+          fi
+          AUDIT=$(curl -s --max-time 10 "$WORKER_URL/api/audit" || echo '{}')
+          if echo "$AUDIT" | grep -q 'entries'; then
+            echo "gate10=PASS" >> $GITHUB_OUTPUT
+          else
+            echo "gate10=FAIL" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post acceptance gate summary
+        if: always()
+        run: |
+          echo "## Acceptance Gate Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Gate | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 — Worker health | ${{ steps.gate1.outputs.gate1 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 — Full watchdog | ${{ steps.gate2.outputs.gate2 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 — Chart of accounts seeded | ${{ steps.gate3.outputs.gate3 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 4 — Scan run creation | ${{ steps.gate4.outputs.gate4 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 5 — Ledger endpoint | ${{ steps.gate5.outputs.gate5 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 6 — Refund guard endpoint | ${{ steps.gate6.outputs.gate6 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 7 — Export endpoint | ${{ steps.gate7.outputs.gate7 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 8 — Tax summary endpoint | ${{ steps.gate8.outputs.gate8 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 9 — AP summary endpoint | ${{ steps.gate9.outputs.gate9 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 10 — Audit endpoint | ${{ steps.gate10.outputs.gate10 }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Gates 11-40 require: physical device, Gemini API key, and deployed worker." >> $GITHUB_STEP_SUMMARY
+          echo "Health response: ${{ steps.gate1.outputs.health_response }}" >> $GITHUB_STEP_SUMMARY
