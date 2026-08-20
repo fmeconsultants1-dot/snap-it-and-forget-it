@@ -6,6 +6,8 @@
 
 import { ScanService, Env } from './services/ScanService';
 import { LedgerService } from './services/LedgerService';
+import { WatchdogService } from './services/WatchdogService';
+import { handleExtended } from './routes/extended';
 
 function cors(origin: string) {
   return {
@@ -33,7 +35,7 @@ function error(message: string, status = 400, originHeader = '*') {
 function getAllowedOrigin(request: Request, env: Env): string {
   const origin = request.headers.get('Origin') ?? '';
   const allowed = (env.ALLOWED_ORIGINS ?? '').split(',').map(o => o.trim());
-  return allowed.includes(origin) ? origin : allowed[0] ?? '*';
+  return allowed.includes(origin) ? origin : (allowed[0] ?? '*');
 }
 
 export default {
@@ -49,14 +51,21 @@ export default {
     }
 
     try {
-      // ── Health ─────────────────────────────────────────────────────────────
+      // ── Health (basic) ─────────────────────────────────────────────────────
       if (path === '/health' && method === 'GET') {
         const dbCheck = await env.DB.prepare('SELECT 1 as ok').first();
         return json({ status: 'ok', db: !!dbCheck, ts: new Date().toISOString() }, 200, originHeader);
       }
 
+      // ── Health (full watchdog) ─────────────────────────────────────────────
+      if (path === '/health/full' && method === 'GET') {
+        const watchdog = new WatchdogService(env.DB, env.DOCUMENTS, env.GEMINI_API_KEY);
+        const report = await watchdog.check();
+        const status = report.status === 'ok' ? 200 : report.status === 'degraded' ? 207 : 503;
+        return json(report, status, originHeader);
+      }
+
       // ── Scan: start a new run ───────────────────────────────────────────────
-      // POST /api/scan/run  { documentCount: number }
       if (path === '/api/scan/run' && method === 'POST') {
         const body = await request.json() as any;
         const documentCount = Number(body.documentCount ?? 1);
@@ -66,7 +75,6 @@ export default {
       }
 
       // ── Scan: process one document ─────────────────────────────────────────
-      // POST /api/scan/document  { runId, sequence, imageBase64, mimeType, fileName }
       if (path === '/api/scan/document' && method === 'POST') {
         const body = await request.json() as any;
         if (!body.runId) return error('runId required', 400, originHeader);
@@ -83,10 +91,9 @@ export default {
       }
 
       // ── Scan: finalize run ─────────────────────────────────────────────────
-      // POST /api/scan/run/:runId/finalize
       const finalizeMatch = path.match(/^\/api\/scan\/run\/([^/]+)\/finalize$/);
       if (finalizeMatch && method === 'POST') {
-        const runId = finalizeMatch[1];
+        const runId = finalizeMatch[1]!;
         const svc = new ScanService(env);
         await svc.finalizeRun(runId);
         const run = await svc.getRun(runId);
@@ -94,18 +101,16 @@ export default {
       }
 
       // ── Scan: get run ──────────────────────────────────────────────────────
-      // GET /api/scan/run/:runId
       const runGetMatch = path.match(/^\/api\/scan\/run\/([^/]+)$/);
       if (runGetMatch && method === 'GET') {
-        const runId = runGetMatch[1];
+        const runId = runGetMatch[1]!;
         const svc = new ScanService(env);
         const run = await svc.getRun(runId);
         if (!run) return error('Run not found', 404, originHeader);
         return json(run, 200, originHeader);
       }
 
-      // ── Ledger: register view ──────────────────────────────────────────────
-      // GET /api/ledger?runId=&dateFilter=today|all|this_run&entryType=RECEIPT|INVOICE|STATEMENT&status=NEEDS_REVIEW
+      // ── Ledger: register ─────────────────────────────────────────────────
       if (path === '/api/ledger' && method === 'GET') {
         const ledger = new LedgerService(env.DB);
         const entries = await ledger.getLedgerEntries({
@@ -116,14 +121,11 @@ export default {
           limit: Number(url.searchParams.get('limit') ?? 100),
           offset: Number(url.searchParams.get('offset') ?? 0),
         });
-        const runningTotal = await ledger.getRunningTotal(
-          url.searchParams.get('runId') ?? undefined
-        );
+        const runningTotal = await ledger.getRunningTotal(url.searchParams.get('runId') ?? undefined);
         return json({ entries, runningTotal }, 200, originHeader);
       }
 
-      // ── Ledger: accounting journal view ────────────────────────────────────
-      // GET /api/ledger/journal?runId=&dateFilter=&entryType=&status=
+      // ── Ledger: accounting journal ────────────────────────────────────────
       if (path === '/api/ledger/journal' && method === 'GET') {
         const ledger = new LedgerService(env.DB);
         const entries = await ledger.getJournalEntries({
@@ -135,31 +137,25 @@ export default {
         return json({ entries }, 200, originHeader);
       }
 
-      // ── Ledger: approve entry ──────────────────────────────────────────────
-      // POST /api/ledger/:id/approve
+      // ── Ledger: approve ──────────────────────────────────────────────────
       const approveMatch = path.match(/^\/api\/ledger\/([^/]+)\/approve$/);
       if (approveMatch && method === 'POST') {
-        const ledgerEntryId = approveMatch[1];
         const ledger = new LedgerService(env.DB);
-        await ledger.approveLedgerEntry(ledgerEntryId);
-        return json({ success: true, ledgerEntryId }, 200, originHeader);
+        await ledger.approveLedgerEntry(approveMatch[1]!);
+        return json({ success: true }, 200, originHeader);
       }
 
-      // ── Ledger: source document (R2 signed URL) ────────────────────────────
-      // GET /api/ledger/:id/source
+      // ── Ledger: source document ──────────────────────────────────────────
       const sourceMatch = path.match(/^\/api\/ledger\/([^/]+)\/source$/);
       if (sourceMatch && method === 'GET') {
-        const ledgerEntryId = sourceMatch[1];
         const row = await env.DB.prepare(`
           SELECT d.r2_key FROM ledger_entries le
           JOIN documents d ON le.document_id = d.id
           WHERE le.id = ?
-        `).bind(ledgerEntryId).first() as any;
+        `).bind(sourceMatch[1]!).first() as any;
         if (!row?.r2_key) return error('Source not found', 404, originHeader);
-        // Generate signed URL (1 hour)
         const obj = await env.DOCUMENTS.get(row.r2_key);
         if (!obj) return error('Document not in storage', 404, originHeader);
-        // Return as blob
         const blob = await obj.arrayBuffer();
         return new Response(blob, {
           status: 200,
@@ -171,7 +167,6 @@ export default {
       }
 
       // ── Bank import ────────────────────────────────────────────────────────
-      // POST /api/import/bank  { rows: [{date, description, amount, account_code}] }
       if (path === '/api/import/bank' && method === 'POST') {
         const body = await request.json() as any;
         const rows = body.rows ?? [];
@@ -187,8 +182,7 @@ export default {
         return json({ imported: inserted.length, ids: inserted }, 201, originHeader);
       }
 
-      // ── Export ─────────────────────────────────────────────────────────────
-      // GET /api/export/ledger?format=csv&dateFrom=&dateTo=
+      // ── Ledger CSV export ─────────────────────────────────────────────────
       if (path === '/api/export/ledger' && method === 'GET') {
         const ledger = new LedgerService(env.DB);
         const entries = await ledger.getLedgerEntries({ limit: 10000 });
@@ -207,15 +201,16 @@ export default {
       }
 
       // ── Audit log ──────────────────────────────────────────────────────────
-      // GET /api/audit?entityType=&entityId=&limit=
       if (path === '/api/audit' && method === 'GET') {
-        const result = await env.DB.prepare(`
-          SELECT * FROM audit_log
-          ORDER BY performed_at DESC
-          LIMIT ?
-        `).bind(Number(url.searchParams.get('limit') ?? 100)).all();
+        const result = await env.DB.prepare(
+          'SELECT * FROM audit_log ORDER BY performed_at DESC LIMIT ?'
+        ).bind(Number(url.searchParams.get('limit') ?? 100)).all();
         return json({ entries: result.results }, 200, originHeader);
       }
+
+      // ── Extended routes (reconcile, tax, AP/AR, journal export, accounts, runs) ──
+      const extended = await handleExtended(request, env as any, originHeader);
+      if (extended) return extended;
 
       return error('Not found', 404, originHeader);
 
