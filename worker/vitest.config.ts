@@ -4,14 +4,22 @@ export default defineConfig({
   test: {
     environment: 'node',
     globals: false,
-    include: ['src/tests/**/*.test.ts', 'src/tests/runtime/**/*.test.ts'],
+    // Runtime tests use real SQLite (native module) -- needs separate pool
+    // Unit tests run in main thread
+    poolOptions: {
+      threads: {
+        singleThread: true, // SQLite requires single-threaded access
+      },
+    },
+    include: ['src/tests/**/*.test.ts'],
     exclude: ['node_modules', 'dist'],
     testTimeout: 30000,
     reporters: ['verbose'],
-    coverage: {
-      provider: 'v8',
-      include: ['src/services/**', 'src/lib/**'],
-      exclude: ['src/tests/**'],
+    // Allow better-sqlite3 native module
+    server: {
+      deps: {
+        inline: ['better-sqlite3'],
+      },
     },
   },
 });
