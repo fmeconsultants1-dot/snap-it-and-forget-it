@@ -1,0 +1,7 @@
+# Snap It & Forget It — Worker Secrets Template
+# Copy to .dev.vars for local development (wrangler reads this automatically)
+# NEVER commit .dev.vars — it is in .gitignore
+# Production: set via `wrangler secret put VARIABLE_NAME`
+
+GEMINI_API_KEY=your-google-ai-api-key-here
+ALLOWED_ORIGINS=http://localhost:5173,https://snap-it-and-forget-it.pages.dev
