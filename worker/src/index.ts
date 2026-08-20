@@ -1,9 +1,8 @@
 /**
- * index.ts
- * FME Mission 001 — Snap It & Forget It
- * Cloudflare Worker — Main Entry Point
+ * index.ts - FME Mission 001 - Snap It & Forget It
+ * Cloudflare Worker entry point. 25 routes total.
+ * index.ts: 13 | extended.ts: 12
  */
-
 import { ScanService, Env } from './services/ScanService';
 import { LedgerService } from './services/LedgerService';
 import { WatchdogService } from './services/WatchdogService';
@@ -18,18 +17,15 @@ function cors(origin: string) {
   };
 }
 
-function json(data: unknown, status = 200, originHeader = '*') {
+function json(data: unknown, status = 200, origin = '*') {
   return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      'Content-Type': 'application/json',
-      ...cors(originHeader),
-    },
+    headers: { 'Content-Type': 'application/json', ...cors(origin) },
   });
 }
 
-function error(message: string, status = 400, originHeader = '*') {
-  return json({ error: message }, status, originHeader);
+function err(msg: string, status = 400, origin = '*') {
+  return json({ error: msg }, status, origin);
 }
 
 function getAllowedOrigin(request: Request, env: Env): string {
@@ -43,42 +39,41 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
-    const originHeader = getAllowedOrigin(request, env);
+    const origin = getAllowedOrigin(request, env);
 
-    // CORS preflight
     if (method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: cors(originHeader) });
+      return new Response(null, { status: 204, headers: cors(origin) });
     }
 
     try {
-      // ── Health (basic) ─────────────────────────────────────────────────────
+
+      // 1. GET /health
       if (path === '/health' && method === 'GET') {
-        const dbCheck = await env.DB.prepare('SELECT 1 as ok').first();
-        return json({ status: 'ok', db: !!dbCheck, ts: new Date().toISOString() }, 200, originHeader);
+        const ok = await env.DB.prepare('SELECT 1 as ok').first();
+        return json({ status: 'ok', db: !!ok, ts: new Date().toISOString() }, 200, origin);
       }
 
-      // ── Health (full watchdog) ─────────────────────────────────────────────
+      // 2. GET /health/full
       if (path === '/health/full' && method === 'GET') {
-        const watchdog = new WatchdogService(env.DB, env.DOCUMENTS, env.GEMINI_API_KEY);
-        const report = await watchdog.check();
+        const w = new WatchdogService(env.DB, env.DOCUMENTS, env.GEMINI_API_KEY);
+        const report = await w.check();
         const status = report.status === 'ok' ? 200 : report.status === 'degraded' ? 207 : 503;
-        return json(report, status, originHeader);
+        return json(report, status, origin);
       }
 
-      // ── Scan: start a new run ───────────────────────────────────────────────
+      // 3. POST /api/scan/run
       if (path === '/api/scan/run' && method === 'POST') {
         const body = await request.json() as any;
-        const documentCount = Number(body.documentCount ?? 1);
         const svc = new ScanService(env);
-        const runId = await svc.createRun(documentCount);
-        return json({ runId }, 201, originHeader);
+        const runId = await svc.createRun(Number(body.documentCount ?? 1));
+        return json({ runId }, 201, origin);
       }
 
-      // ── Scan: process one document ─────────────────────────────────────────
+      // 4. POST /api/scan/document
       if (path === '/api/scan/document' && method === 'POST') {
         const body = await request.json() as any;
-        if (!body.runId) return error('runId required', 400, originHeader);
-        if (!body.imageBase64) return error('imageBase64 required', 400, originHeader);
+        if (!body.runId) return err('runId required', 400, origin);
+        if (!body.imageBase64) return err('imageBase64 required', 400, origin);
         const svc = new ScanService(env);
         const result = await svc.processDocument({
           runId: body.runId,
@@ -87,30 +82,27 @@ export default {
           mimeType: body.mimeType ?? 'image/jpeg',
           fileName: body.fileName,
         });
-        return json(result, result.status === 'DONE' ? 200 : 422, originHeader);
+        return json(result, result.status === 'DONE' ? 200 : 422, origin);
       }
 
-      // ── Scan: finalize run ─────────────────────────────────────────────────
+      // 5. POST /api/scan/run/:runId/finalize
       const finalizeMatch = path.match(/^\/api\/scan\/run\/([^/]+)\/finalize$/);
       if (finalizeMatch && method === 'POST') {
-        const runId = finalizeMatch[1]!;
         const svc = new ScanService(env);
-        await svc.finalizeRun(runId);
-        const run = await svc.getRun(runId);
-        return json(run, 200, originHeader);
+        await svc.finalizeRun(finalizeMatch[1]!);
+        return json(await svc.getRun(finalizeMatch[1]!), 200, origin);
       }
 
-      // ── Scan: get run ──────────────────────────────────────────────────────
+      // 6. GET /api/scan/run/:runId
       const runGetMatch = path.match(/^\/api\/scan\/run\/([^/]+)$/);
       if (runGetMatch && method === 'GET') {
-        const runId = runGetMatch[1]!;
         const svc = new ScanService(env);
-        const run = await svc.getRun(runId);
-        if (!run) return error('Run not found', 404, originHeader);
-        return json(run, 200, originHeader);
+        const run = await svc.getRun(runGetMatch[1]!);
+        if (!run) return err('Run not found', 404, origin);
+        return json(run, 200, origin);
       }
 
-      // ── Ledger: register ─────────────────────────────────────────────────
+      // 7. GET /api/ledger
       if (path === '/api/ledger' && method === 'GET') {
         const ledger = new LedgerService(env.DB);
         const entries = await ledger.getLedgerEntries({
@@ -122,10 +114,10 @@ export default {
           offset: Number(url.searchParams.get('offset') ?? 0),
         });
         const runningTotal = await ledger.getRunningTotal(url.searchParams.get('runId') ?? undefined);
-        return json({ entries, runningTotal }, 200, originHeader);
+        return json({ entries, runningTotal }, 200, origin);
       }
 
-      // ── Ledger: accounting journal ────────────────────────────────────────
+      // 8. GET /api/ledger/journal
       if (path === '/api/ledger/journal' && method === 'GET') {
         const ledger = new LedgerService(env.DB);
         const entries = await ledger.getJournalEntries({
@@ -134,55 +126,49 @@ export default {
           entryType: url.searchParams.get('entryType') ?? undefined,
           status: url.searchParams.get('status') ?? undefined,
         });
-        return json({ entries }, 200, originHeader);
+        return json({ entries }, 200, origin);
       }
 
-      // ── Ledger: approve ──────────────────────────────────────────────────
+      // 9. POST /api/ledger/:id/approve
       const approveMatch = path.match(/^\/api\/ledger\/([^/]+)\/approve$/);
       if (approveMatch && method === 'POST') {
         const ledger = new LedgerService(env.DB);
         await ledger.approveLedgerEntry(approveMatch[1]!);
-        return json({ success: true }, 200, originHeader);
+        return json({ success: true }, 200, origin);
       }
 
-      // ── Ledger: source document ──────────────────────────────────────────
+      // 10. GET /api/ledger/:id/source  (before /splits and /split to avoid prefix match)
       const sourceMatch = path.match(/^\/api\/ledger\/([^/]+)\/source$/);
       if (sourceMatch && method === 'GET') {
-        const row = await env.DB.prepare(`
-          SELECT d.r2_key FROM ledger_entries le
-          JOIN documents d ON le.document_id = d.id
-          WHERE le.id = ?
-        `).bind(sourceMatch[1]!).first() as any;
-        if (!row?.r2_key) return error('Source not found', 404, originHeader);
+        const row = await env.DB.prepare(
+          'SELECT d.r2_key FROM ledger_entries le JOIN documents d ON le.document_id=d.id WHERE le.id=?'
+        ).bind(sourceMatch[1]!).first() as any;
+        if (!row?.r2_key) return err('Source not found', 404, origin);
         const obj = await env.DOCUMENTS.get(row.r2_key);
-        if (!obj) return error('Document not in storage', 404, originHeader);
+        if (!obj) return err('Document not in storage', 404, origin);
         const blob = await obj.arrayBuffer();
         return new Response(blob, {
           status: 200,
-          headers: {
-            'Content-Type': obj.httpMetadata?.contentType ?? 'image/jpeg',
-            ...cors(originHeader),
-          },
+          headers: { 'Content-Type': obj.httpMetadata?.contentType ?? 'image/jpeg', ...cors(origin) },
         });
       }
 
-      // ── Bank import ────────────────────────────────────────────────────────
+      // 11. POST /api/import/bank
       if (path === '/api/import/bank' && method === 'POST') {
         const body = await request.json() as any;
         const rows = body.rows ?? [];
-        const inserted: string[] = [];
+        const ids: string[] = [];
         for (const row of rows) {
           const id = crypto.randomUUID();
-          await env.DB.prepare(`
-            INSERT INTO bank_imports (id, source, transaction_date, description, amount, account_code, raw_row, imported_at)
-            VALUES (?,?,?,?,?,?,?,datetime('now'))
-          `).bind(id, body.source ?? 'csv', row.date, row.description, row.amount, row.account_code ?? '1020', JSON.stringify(row)).run();
-          inserted.push(id);
+          await env.DB.prepare(
+            "INSERT INTO bank_imports (id,source,transaction_date,description,amount,account_code,raw_row,imported_at) VALUES (?,?,?,?,?,?,?,datetime('now'))"
+          ).bind(id, body.source ?? 'csv', row.date, row.description, row.amount, row.account_code ?? '1020', JSON.stringify(row)).run();
+          ids.push(id);
         }
-        return json({ imported: inserted.length, ids: inserted }, 201, originHeader);
+        return json({ imported: ids.length, ids }, 201, origin);
       }
 
-      // ── Ledger CSV export ─────────────────────────────────────────────────
+      // 12. GET /api/export/ledger
       if (path === '/api/export/ledger' && method === 'GET') {
         const ledger = new LedgerService(env.DB);
         const entries = await ledger.getLedgerEntries({ limit: 10000 });
@@ -195,28 +181,28 @@ export default {
           headers: {
             'Content-Type': 'text/csv',
             'Content-Disposition': 'attachment; filename="snap-it-ledger.csv"',
-            ...cors(originHeader),
+            ...cors(origin),
           },
         });
       }
 
-      // ── Audit log ──────────────────────────────────────────────────────────
+      // 13. GET /api/audit
       if (path === '/api/audit' && method === 'GET') {
         const result = await env.DB.prepare(
           'SELECT * FROM audit_log ORDER BY performed_at DESC LIMIT ?'
         ).bind(Number(url.searchParams.get('limit') ?? 100)).all();
-        return json({ entries: result.results }, 200, originHeader);
+        return json({ entries: result.results }, 200, origin);
       }
 
-      // ── Extended routes (reconcile, tax, AP/AR, journal export, accounts, runs) ──
-      const extended = await handleExtended(request, env as any, originHeader);
+      // 14-25. Extended routes (reconcile, tax, AP, export, refund, split)
+      const extended = await handleExtended(request, env as any, origin);
       if (extended) return extended;
 
-      return error('Not found', 404, originHeader);
+      return err('Not found', 404, origin);
 
-    } catch (err: any) {
-      console.error('[snap-it-worker] Error:', err);
-      return error(err.message ?? 'Internal server error', 500, originHeader);
+    } catch (e: any) {
+      console.error('[snap-it]', e);
+      return err(e.message ?? 'Internal server error', 500, origin);
     }
   },
 };
