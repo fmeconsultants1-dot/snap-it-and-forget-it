@@ -9,6 +9,7 @@ import CameraPage from './pages/CameraPage';
 import ProcessingPage from './pages/ProcessingPage';
 import ResultsPage from './pages/ResultsPage';
 import LedgerPage from './pages/LedgerPage';
+import AccountantPortal from './pages/AccountantPortal';
 import './index.css';
 
 export default function App() {
@@ -20,6 +21,7 @@ export default function App() {
         <Route path="/processing" element={<ProcessingPage />} />
         <Route path="/results" element={<ResultsPage />} />
         <Route path="/ledger" element={<LedgerPage />} />
+        <Route path="/accountant" element={<AccountantPortal />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
