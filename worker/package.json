@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "build": "tsc",
+    "build": "npx tsc",
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 execute snap-it-db --file=src/db/schema.sql",
     "db:migrate:002": "wrangler d1 execute snap-it-db --file=src/db/migrations/002_refunds_splits.sql",
