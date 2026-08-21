@@ -27,7 +27,7 @@ env:
 jobs:
 
   # ===========================================================
-  # JOB 1 — TEST SUITE
+  # JOB 1 — TEST SUITE (unit tests only; runtime tests require live Cloudflare bindings)
   # ===========================================================
   test:
     name: Test Suite
@@ -50,11 +50,16 @@ jobs:
       - name: Install (includes better-sqlite3 native build)
         run: npm install
 
-      - name: Run full test suite
+      - name: Run unit test suite
         id: run
         run: |
           set -o pipefail
-          npx vitest run --reporter=verbose 2>&1 | tee test-output.txt
+          npx vitest run --reporter=verbose \
+            src/tests/ledger.test.ts \
+            src/tests/refund.test.ts \
+            src/tests/split.test.ts \
+            src/tests/money.test.ts \
+            2>&1 | tee test-output.txt
           EXIT=$?
           if [ $EXIT -eq 0 ]; then
             echo "passed=true" >> $GITHUB_OUTPUT
