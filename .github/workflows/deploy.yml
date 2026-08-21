@@ -1,0 +1,54 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: npm install
+      - name: Patch wrangler.toml with D1 ID
+        run: |
+          LIST=$(npx wrangler d1 list 2>&1)
+          echo "$LIST"
+          D1_ID=$(echo "$LIST" | grep -oP '(?<=snap-it-db\s{1,40})([a-f0-9-]{36})' | head -1 || true)
+          if [ -z "$D1_ID" ]; then
+            D1_ID=$(npx wrangler d1 list --json 2>/dev/null | python3 -c "import sys,json;[print(d['uuid']) for d in json.load(sys.stdin) if d.get('name')=='snap-it-db']" 2>/dev/null | head -1 || true)
+          fi
+          echo "D1_ID=$D1_ID"
+          if [ -n "$D1_ID" ]; then
+            sed -i "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/$D1_ID/g" wrangler.toml
+          fi
+          cat wrangler.toml
+      - name: R2 bucket
+        run: npx wrangler r2 bucket create snap-it-documents 2>&1 || true
+      - name: Migrations
+        run: |
+          npx wrangler d1 execute snap-it-db --file=src/db/schema.sql --remote 2>&1 || true
+          npx wrangler d1 execute snap-it-db --file=src/db/migrations/002_refunds_splits.sql --remote 2>&1 || true
+      - name: Inject secrets
+        run: |
+          echo "${{ secrets.GEMINI_API_KEY }}" | npx wrangler secret put GEMINI_API_KEY --name snap-it-forget-it-api-extract 2>&1
+          echo "https://snap-it-and-forget-it.pages.dev,http://localhost:5173" | npx wrangler secret put ALLOWED_ORIGINS --name snap-it-forget-it-api-extract 2>&1
+      - name: Deploy worker
+        run: npx wrangler deploy --name snap-it-forget-it-api-extract 2>&1
+      - name: Health check
+        run: |
+          sleep 10
+          curl -sf https://snap-it-forget-it-api-extract.fmeconsultants1.workers.dev/health
+          curl -sf https://snap-it-forget-it-api-extract.fmeconsultants1.workers.dev/health/full
