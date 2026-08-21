@@ -66,6 +66,7 @@ export default function ProcessingPage() {
         const failResult: ScanResult = {
           documentId: '', extractionId: '', ledgerEntryId: '',
           journalEntryId: '', refNumber: '', status: 'FAILED',
+          lineCount: 0, itcFlags: [],
           error: err.message, extraction: {} as any,
         };
         collected.push(failResult);

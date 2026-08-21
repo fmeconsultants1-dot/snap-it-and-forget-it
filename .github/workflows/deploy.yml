@@ -92,3 +92,33 @@ jobs:
           echo "$FULL" | grep -q '"r2":true' && echo "R2: PASS" || echo "R2: WARN"
           echo "$FULL" | grep -q '"gemini_configured":true' && echo "Gemini: PASS" || echo "Gemini: WARN"
           echo "(Full watchdog result is informational — does not block deployment)"
+
+  pages:
+    name: Deploy Frontend to Cloudflare Pages
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install app dependencies
+        run: cd app && npm install
+
+      - name: Build frontend
+        run: cd app && npm run build
+        env:
+          VITE_API_URL: https://snap-it-forget-it-api-extract.fmeconsultants1.workers.dev
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: snap-it-and-forget-it
+          directory: app/dist
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          branch: main
