@@ -299,4 +299,9 @@ export class LedgerService {
       : await this.db.prepare(q).first();
     return (r as any)?.t ?? 0;
   }
+
+  async getLedgerEntryById(id: string): Promise<LedgerEntryRow | null> {
+    const r = await this.db.prepare('SELECT * FROM ledger_entries WHERE id=?').bind(id).first();
+    return r as LedgerEntryRow | null;
+  }
 }

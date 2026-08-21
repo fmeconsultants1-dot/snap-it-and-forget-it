@@ -129,7 +129,16 @@ export default {
         return json({ entries }, 200, origin);
       }
 
-      // 9. POST /api/ledger/:id/approve
+      // 9. GET /api/ledger/:id
+      const ledgerGetMatch = path.match(/^\/api\/ledger\/([^/]+)$/);
+      if (ledgerGetMatch && method === 'GET') {
+        const ledger = new LedgerService(env.DB);
+        const entry = await ledger.getLedgerEntryById(ledgerGetMatch[1]!);
+        if (!entry) return err('Ledger entry not found', 404, origin);
+        return json(entry, 200, origin);
+      }
+
+      // 10. POST /api/ledger/:id/approve
       const approveMatch = path.match(/^\/api\/ledger\/([^/]+)\/approve$/);
       if (approveMatch && method === 'POST') {
         const ledger = new LedgerService(env.DB);

@@ -64,7 +64,7 @@ const UNREGISTERED_CONFIG: BusinessConfig = {
 };
 
 function buildLines(
-  extraction: Partial<ExtractionResult> & { doc_type: string; total: number },
+  extraction: Partial<ExtractionResult> & { doc_type: 'RECEIPT' | 'INVOICE' | 'DOCUMENT' | 'STATEMENT' | string; total: number },
   config: BusinessConfig = UNREGISTERED_CONFIG
 ): { lines: JournalLine[]; flags: string[] } {
   const flags: string[] = [];
