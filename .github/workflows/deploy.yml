@@ -23,17 +23,40 @@ jobs:
           cache-dependency-path: worker/package-lock.json
       - run: npm install
 
+      - name: Create D1 database if needed
+        run: |
+          echo "Checking for D1 database..."
+          npx wrangler d1 list --json 2>/dev/null > /tmp/d1_list.json || true
+          HAS_DB=$(cat /tmp/d1_list.json 2>/dev/null | node -e "
+            let data=''; process.stdin.on('data',c=>data+=c); process.stdin.on('end',()=>{
+              try { const list=JSON.parse(data); const db=list.find(d=>d.name==='snap-it-db'); console.log(db?'yes':'no'); }
+              catch(e) { console.log('no'); }
+            });
+          " 2>/dev/null || echo "no")
+          if [ "$HAS_DB" != "yes" ]; then
+            echo "Creating D1 database snap-it-db..."
+            npx wrangler d1 create snap-it-db 2>&1 || true
+            # Re-list to get the new ID
+            npx wrangler d1 list --json 2>/dev/null > /tmp/d1_list.json || true
+          else
+            echo "D1 database snap-it-db already exists"
+          fi
+
       - name: Patch wrangler.toml with D1 ID
         run: |
-          LIST=$(npx wrangler d1 list 2>&1)
-          echo "$LIST"
-          D1_ID=$(echo "$LIST" | grep -oP '(?<=snap-it-db\s{1,40})([a-f0-9-]{36})' | head -1 || true)
-          if [ -z "$D1_ID" ]; then
-            D1_ID=$(npx wrangler d1 list --json 2>/dev/null | python3 -c "import sys,json;[print(d['uuid']) for d in json.load(sys.stdin) if d.get('name')=='snap-it-db']" 2>/dev/null | head -1 || true)
-          fi
+          D1_ID=$(cat /tmp/d1_list.json 2>/dev/null | node -e "
+            let data=''; process.stdin.on('data',c=>data+=c); process.stdin.on('end',()=>{
+              try { const list=JSON.parse(data); const db=list.find(d=>d.name==='snap-it-db'); console.log(db?db.uuid:''); }
+              catch(e) { console.log(''); }
+            });
+          " 2>/dev/null)
           echo "D1_ID=$D1_ID"
           if [ -n "$D1_ID" ]; then
             sed -i "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/$D1_ID/g" wrangler.toml
+            echo "Patched wrangler.toml with D1 ID"
+          else
+            echo "WARNING: Could not find D1 ID"
+            npx wrangler d1 list 2>&1 || true
           fi
           cat wrangler.toml
 
