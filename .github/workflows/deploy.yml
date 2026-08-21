@@ -56,12 +56,12 @@ jobs:
       - name: Health check (basic — must pass)
         run: |
           sleep 10
-          curl -sf https://snap-it-forget-it-api-extract.fmeconsultants1.workers.dev/health
+          curl -sf https://snap-it-forget-it-api-extract.fmeconsultants1-dot.workers.dev/health
           echo "Basic health: PASS"
 
       - name: Health check (full watchdog — warn only)
         run: |
-          FULL=$(curl -s --max-time 15 https://snap-it-forget-it-api-extract.fmeconsultants1.workers.dev/health/full || echo '{}')
+          FULL=$(curl -s --max-time 15 https://snap-it-forget-it-api-extract.fmeconsultants1-dot.workers.dev/health/full || echo '{}')
           echo "Full health response: $FULL"
           echo "$FULL" | grep -q '"db":true' && echo "D1: PASS" || echo "D1: WARN"
           echo "$FULL" | grep -q '"r2":true' && echo "R2: PASS" || echo "R2: WARN"
