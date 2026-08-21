@@ -87,8 +87,7 @@ jobs:
     if: |
       needs.test.outputs.passed == 'true' &&
       github.ref == 'refs/heads/main' &&
-      github.event.inputs.skip_deploy != 'true' &&
-      secrets.CLOUDFLARE_API_TOKEN != ''
+      github.event.inputs.skip_deploy != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -236,8 +235,7 @@ except:
     if: |
       needs.test.outputs.passed == 'true' &&
       github.ref == 'refs/heads/main' &&
-      github.event.inputs.skip_deploy != 'true' &&
-      secrets.CLOUDFLARE_API_TOKEN != ''
+      github.event.inputs.skip_deploy != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
