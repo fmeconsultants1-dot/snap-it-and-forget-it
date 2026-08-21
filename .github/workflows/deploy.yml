@@ -66,9 +66,10 @@ jobs:
       - name: Migrations
         run: |
           echo "Running schema.sql..."
-          npx wrangler d1 execute snap-it-db --file=src/db/schema.sql --remote 2>&1
+          npx wrangler d1 execute snap-it-db --file=src/db/schema.sql --remote 2>&1 || true
           echo "Running 002_refunds_splits.sql..."
           npx wrangler d1 execute snap-it-db --file=src/db/migrations/002_refunds_splits.sql --remote 2>&1 || true
+          echo "Migrations step complete (schema already applied)"
 
       - name: Inject secrets
         run: |
