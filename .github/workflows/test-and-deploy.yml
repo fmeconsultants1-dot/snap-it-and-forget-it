@@ -21,15 +21,13 @@ on:
 env:
   D1_NAME: snap-it-db
   R2_BUCKET: snap-it-documents
-  WORKER_NAME: snap-it-worker
+  WORKER_NAME: snap-it-forget-it-api-extract
   PAGES_PROJECT: snap-it-and-forget-it
 
 jobs:
 
   # ===========================================================
   # JOB 1 — TEST SUITE
-  # Runs vitest against real SQLite (better-sqlite3).
-  # No secrets required. Runs on every push.
   # ===========================================================
   test:
     name: Test Suite
@@ -82,8 +80,6 @@ jobs:
 
   # ===========================================================
   # JOB 2 — DEPLOY WORKER
-  # Creates D1 + R2 if needed, runs migrations,
-  # injects all secrets, deploys worker.
   # ===========================================================
   deploy-worker:
     name: Deploy Worker
@@ -121,11 +117,9 @@ jobs:
         id: d1
         run: |
           echo "Creating or locating D1 database: $D1_NAME"
-          # Try to create; if already exists wrangler exits non-zero with 'already exists'
           CREATE_OUT=$(npx wrangler d1 create "$D1_NAME" 2>&1 || true)
           echo "$CREATE_OUT"
 
-          # Extract database_id from create output or from list
           D1_ID=$(echo "$CREATE_OUT" | grep -o 'database_id = "[^"]*"' | cut -d'"' -f2 || true)
 
           if [ -z "$D1_ID" ]; then
@@ -153,7 +147,6 @@ except:
           echo "D1 database ID: $D1_ID"
           echo "d1_id=$D1_ID" >> $GITHUB_OUTPUT
 
-          # Patch wrangler.toml in-place
           sed -i "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/$D1_ID/g" wrangler.toml
           echo "wrangler.toml patched with D1 ID"
           cat wrangler.toml
@@ -196,10 +189,9 @@ except:
           DEPLOY_OUT=$(npx wrangler deploy --name "$WORKER_NAME" 2>&1)
           echo "$DEPLOY_OUT"
 
-          # Extract worker URL
           WORKER_URL=$(echo "$DEPLOY_OUT" | grep -o 'https://[^ ]*workers.dev' | head -1 || true)
           if [ -z "$WORKER_URL" ]; then
-            WORKER_URL="https://$WORKER_NAME.fmeconsultants1-dot.workers.dev"
+            WORKER_URL="https://snap-it-forget-it-api-extract.fmeconsultants1.workers.dev"
           fi
           echo "Worker URL: $WORKER_URL"
           echo "worker_url=$WORKER_URL" >> $GITHUB_OUTPUT
@@ -213,7 +205,7 @@ except:
           HEALTH=$(curl -s --max-time 15 "$WORKER_URL/health" 2>&1 || echo '{"status":"unreachable"}')
           echo "Health response: $HEALTH"
           echo "health=$HEALTH" >> $GITHUB_OUTPUT
-          if echo "$HEALTH" | grep -q '"status":"ok"'; then
+          if echo "$HEALTH" | grep -q '"ok":true'; then
             echo "health_pass=true" >> $GITHUB_OUTPUT
           else
             echo "health_pass=false" >> $GITHUB_OUTPUT
@@ -272,7 +264,7 @@ except:
         run: |
           WORKER_URL="${{ needs.deploy-worker.outputs.worker_url }}"
           if [ -z "$WORKER_URL" ]; then
-            WORKER_URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"
+            WORKER_URL="https://snap-it-forget-it-api-extract.fmeconsultants1.workers.dev"
           fi
           echo "VITE_API_URL=$WORKER_URL" > .env.production
           cat .env.production
@@ -300,8 +292,6 @@ except:
 
   # ===========================================================
   # JOB 4 — ACCEPTANCE GATES
-  # Runs automated gates 1-10 against live deployment.
-  # Gates 11-40 require physical device (documented at end).
   # ===========================================================
   acceptance:
     name: Automated Acceptance Gates
@@ -316,17 +306,17 @@ except:
         id: url
         run: |
           URL="${{ needs.deploy-worker.outputs.worker_url }}"
-          if [ -z "$URL" ]; then URL="https://snap-it-worker.fmeconsultants1-dot.workers.dev"; fi
+          if [ -z "$URL" ]; then URL="https://snap-it-forget-it-api-extract.fmeconsultants1.workers.dev"; fi
           echo "url=$URL" >> $GITHUB_OUTPUT
           echo "Testing against: $URL"
 
       - name: Gate 1 — Worker /health
         id: g1
         run: |
-          R=$(curl -sf --max-time 15 "${{ steps.url.outputs.url }}/health" || echo '{"status":"fail"}')
+          R=$(curl -sf --max-time 15 "${{ steps.url.outputs.url }}/health" || echo '{"ok":false}')
           echo "$R"
           echo "response=$R" >> $GITHUB_OUTPUT
-          echo "$R" | grep -q '"status":"ok"' && echo "result=PASS" >> $GITHUB_OUTPUT || echo "result=FAIL" >> $GITHUB_OUTPUT
+          echo "$R" | grep -q '"ok":true' && echo "result=PASS" >> $GITHUB_OUTPUT || echo "result=FAIL" >> $GITHUB_OUTPUT
 
       - name: Gate 2 — Worker /health/full (D1 + R2 + Gemini)
         id: g2
@@ -382,12 +372,11 @@ except:
           R=$(curl -sf --max-time 15 "${{ steps.url.outputs.url }}/api/ledger/journal" || echo '{}')
           echo "$R" | grep -q 'entries' && echo "result=PASS" >> $GITHUB_OUTPUT || echo "result=FAIL" >> $GITHUB_OUTPUT
 
-      - name: Gate 8 — Refund guard endpoint (over-refund protection)
+      - name: Gate 8 — Refund guard endpoint
         id: g8
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
             "${{ steps.url.outputs.url }}/api/refund/guard/test-nonexistent-id?amount=0")
-          # 404 = endpoint reachable, guard logic ran
           [ "$STATUS" = "404" ] || [ "$STATUS" = "200" ] && echo "result=PASS (HTTP $STATUS)" >> $GITHUB_OUTPUT || echo "result=FAIL (HTTP $STATUS)" >> $GITHUB_OUTPUT
 
       - name: Gate 9 — Tax summary endpoint
@@ -436,10 +425,8 @@ except:
         run: |
           RUN_ID="${{ steps.g4.outputs.run_id }}"
           if [ -z "$RUN_ID" ]; then echo "result=SKIP" >> $GITHUB_OUTPUT; exit 0; fi
-          # Get journal entries for this run
           J=$(curl -sf --max-time 15 \
             "${{ steps.url.outputs.url }}/api/ledger/journal?runId=$RUN_ID" || echo '{"entries":[]}')
-          # No documents processed yet (clean run, no docs), but endpoint must return correctly
           echo "$J" | grep -q 'entries' && echo "result=PASS (endpoint balanced)" >> $GITHUB_OUTPUT || echo "result=FAIL" >> $GITHUB_OUTPUT
 
       - name: Post acceptance gate summary
