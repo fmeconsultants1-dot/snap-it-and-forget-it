@@ -15,7 +15,7 @@ APP_ENV = "production"
 [[d1_databases]]
 binding = "DB"
 database_name = "snap-it-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "32b381ab-3d40-4d50-bcc1-c70f3a5e17dd"
 
 [[r2_buckets]]
 binding = "DOCUMENTS"
