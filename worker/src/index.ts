@@ -65,7 +65,8 @@ export default {
     }
 
     // ── STATIC FILE SERVING (frontend) ──
-    if (!path.startsWith('/api/')) {
+    // Only serve static files for non-API paths (exclude /health and /health/full)
+    if (!path.startsWith('/api/') && path !== '/health' && path !== '/health/full') {
       let filePath = path === '/' ? '/index.html' : path;
       const key = `frontend${filePath}`;
       const obj = await env.DOCUMENTS.get(key);
