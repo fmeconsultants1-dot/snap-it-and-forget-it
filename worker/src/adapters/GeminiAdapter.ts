@@ -104,8 +104,46 @@ export class GeminiAdapter {
     this.apiKey = apiKey;
   }
 
-  async extractDocument(imageBase64: string, mimeType: string = 'image/jpeg'): Promise<ExtractionResult> {
+  async extractDocument(imageBase64: string, mimeType: string = 'image/jpeg', attempt: number = 0): Promise<ExtractionResult> {
     const url = `${this.apiBase}/models/${this.model}:generateContent?key=${this.apiKey}`;
+
+    // Structured output schema matching ExtractionResult
+    const responseSchema = {
+      type: 'OBJECT' as const,
+      properties: {
+        doc_type: { type: 'STRING' as const, enum: ['RECEIPT', 'INVOICE', 'DOCUMENT', 'STATEMENT'] },
+        vendor: { type: 'STRING' as const, nullable: true },
+        date: { type: 'STRING' as const, nullable: true },
+        total: { type: 'NUMBER' as const, nullable: true },
+        subtotal: { type: 'NUMBER' as const, nullable: true },
+        tax: { type: 'NUMBER' as const, nullable: true },
+        tax_gst: { type: 'NUMBER' as const, nullable: true },
+        tax_hst: { type: 'NUMBER' as const, nullable: true },
+        tax_pst: { type: 'NUMBER' as const, nullable: true },
+        payment_method: { type: 'STRING' as const, nullable: true },
+        category: { type: 'STRING' as const, nullable: true },
+        description: { type: 'STRING' as const, nullable: true },
+        issuer: { type: 'STRING' as const, nullable: true },
+        line_items: {
+          type: 'ARRAY' as const,
+          items: {
+            type: 'OBJECT' as const,
+            properties: {
+              name: { type: 'STRING' as const },
+              quantity: { type: 'NUMBER' as const },
+              unit_price: { type: 'NUMBER' as const },
+              total: { type: 'NUMBER' as const }
+            },
+            required: ['name', 'quantity', 'unit_price', 'total']
+          }
+        },
+        confidence_vendor: { type: 'NUMBER' as const },
+        confidence_date: { type: 'NUMBER' as const },
+        confidence_total: { type: 'NUMBER' as const },
+        confidence_category: { type: 'NUMBER' as const }
+      },
+      required: ['doc_type', 'confidence_vendor', 'confidence_date', 'confidence_total', 'confidence_category']
+    };
 
     const body = {
       contents: [{
@@ -121,8 +159,9 @@ export class GeminiAdapter {
       }],
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 2048,
-        responseMimeType: 'application/json'
+        maxOutputTokens: 4096,
+        responseMimeType: 'application/json',
+        responseSchema
       }
     };
 
@@ -138,22 +177,43 @@ export class GeminiAdapter {
     }
 
     const data = await response.json() as any;
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    const candidate = data?.candidates?.[0];
+
+    if (!candidate) {
+      throw new Error('Gemini returned empty response (no candidates)');
+    }
+
+    // Check finishReason - if not STOP, the response may be truncated
+    const finishReason = candidate.finishReason;
+    if (finishReason && finishReason !== 'STOP') {
+      // Retry once if incomplete
+      if (attempt < 1) {
+        console.warn(`[Gemini] finishReason=${finishReason}, retrying document...`);
+        return this.extractDocument(imageBase64, mimeType, attempt + 1);
+      }
+      throw new Error(`Gemini response incomplete: finishReason=${finishReason}`);
+    }
+
+    const text = candidate?.content?.parts?.[0]?.text;
 
     if (!text) {
-      throw new Error('Gemini returned empty response');
+      throw new Error('Gemini returned empty response (no text)');
     }
 
     let parsed: any;
     try {
       parsed = JSON.parse(text);
-    } catch {
+    } catch (e: any) {
       // Attempt to extract JSON from response if wrapped in markdown
       const match = text.match(/\{[\s\S]+\}/);
       if (match) {
-        parsed = JSON.parse(match[0]);
+        try {
+          parsed = JSON.parse(match[0]);
+        } catch {
+          throw new Error(`Gemini response is not valid JSON: ${e.message}. Text: ${text.slice(0, 200)}`);
+        }
       } else {
-        throw new Error(`Gemini response is not valid JSON: ${text.slice(0, 200)}`);
+        throw new Error(`Gemini response is not valid JSON: ${e.message}. Text: ${text.slice(0, 200)}`);
       }
     }
 
