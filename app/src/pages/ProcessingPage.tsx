@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { scanApi, ScanResult } from '../lib/api';
+import { docStore } from '../lib/docStore';
 
 interface Doc {
   dataUrl: string;
@@ -25,7 +26,7 @@ interface ProcessedDoc {
 export default function ProcessingPage() {
   const location = useLocation();
   const navigate = useNavigate();
-  const documents: Doc[] = location.state?.documents ?? [];
+  const documents: Doc[] = docStore.get() ?? location.state?.documents ?? [];
   const runIdRef = useRef<string | null>(null);
   const [items, setItems] = useState<ProcessedDoc[]>(
     documents.map(doc => ({ doc, status: 'PENDING' as DocStatus }))

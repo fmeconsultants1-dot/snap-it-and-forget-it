@@ -9,13 +9,8 @@
 
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-
-interface CapturedDoc {
-  dataUrl: string;
-  base64: string;
-  mimeType: string;
-  fileName: string;
-}
+import { docStore } from '../lib/docStore';
+import type { CapturedDoc } from '../lib/docStore';
 
 export default function CameraPage() {
   const navigate = useNavigate();
@@ -82,6 +77,7 @@ export default function CameraPage() {
   const handleDone = () => {
     if (captured.length === 0) return;
     streamRef.current?.getTracks().forEach(t => t.stop());
+    docStore.set(captured);
     navigate('/processing', { state: { documents: captured } });
   };
 
@@ -115,6 +111,7 @@ export default function CameraPage() {
                 });
               }
               if (docs.length > 0) {
+                docStore.set(docs);
                 navigate('/processing', { state: { documents: docs } });
               }
             }}
