@@ -34,6 +34,25 @@ function getAllowedOrigin(request: Request, env: Env): string {
   return allowed.includes(origin) ? origin : (allowed[0] ?? '*');
 }
 
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html',
+  '.js': 'application/javascript',
+  '.mjs': 'application/javascript',
+  '.css': 'text/css',
+  '.json': 'application/json',
+  '.webmanifest': 'application/manifest+json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+};
+
+function getContentType(path: string): string {
+  const ext = path.substring(path.lastIndexOf('.')).toLowerCase();
+  return MIME_TYPES[ext] ?? 'application/octet-stream';
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -43,6 +62,37 @@ export default {
 
     if (method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: cors(origin) });
+    }
+
+    // ── STATIC FILE SERVING (frontend) ──
+    if (!path.startsWith('/api/')) {
+      let filePath = path === '/' ? '/index.html' : path;
+      const key = `frontend${filePath}`;
+      const obj = await env.DOCUMENTS.get(key);
+      if (obj) {
+        const blob = await obj.arrayBuffer();
+        const ct = getContentType(filePath);
+        const cache = filePath.endsWith('.html') ? 'no-cache' : 'public, max-age=31536000, immutable';
+        return new Response(blob, {
+          status: 200,
+          headers: {
+            'Content-Type': ct,
+            'Cache-Control': cache,
+            ...cors(origin),
+          },
+        });
+      }
+      // SPA fallback
+      if (!filePath.includes('.')) {
+        const idx = await env.DOCUMENTS.get('frontend/index.html');
+        if (idx) {
+          const blob = await idx.arrayBuffer();
+          return new Response(blob, {
+            status: 200,
+            headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...cors(origin) },
+          });
+        }
+      }
     }
 
     try {
