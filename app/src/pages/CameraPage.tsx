@@ -78,7 +78,7 @@ export default function CameraPage() {
     if (captured.length === 0) return;
     streamRef.current?.getTracks().forEach(t => t.stop());
     docStore.set(captured);
-    navigate('/processing', { state: { documents: captured } });
+    navigate('/processing');
   };
 
   const flipCamera = () => {
@@ -112,7 +112,7 @@ export default function CameraPage() {
               }
               if (docs.length > 0) {
                 docStore.set(docs);
-                navigate('/processing', { state: { documents: docs } });
+                navigate('/processing');
               }
             }}
           />

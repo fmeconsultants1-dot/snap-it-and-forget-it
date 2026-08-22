@@ -26,7 +26,8 @@ interface ProcessedDoc {
 export default function ProcessingPage() {
   const location = useLocation();
   const navigate = useNavigate();
-  const documents: Doc[] = docStore.get() ?? location.state?.documents ?? [];
+  const documents: Doc[] = docStore.get() ?? [];
+  console.log('[ProcessingPage] documents count:', documents.length);
   const runIdRef = useRef<string | null>(null);
   const [items, setItems] = useState<ProcessedDoc[]>(
     documents.map(doc => ({ doc, status: 'PENDING' as DocStatus }))
