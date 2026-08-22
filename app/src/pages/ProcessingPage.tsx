@@ -76,6 +76,7 @@ export default function ProcessingPage() {
     }
 
     try { await scanApi.finalizeRun(rId); } catch { /* non-fatal */ }
+    docStore.clear();
     setResults(collected);
     setAllDone(true);
   }

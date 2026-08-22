@@ -1,7 +1,7 @@
 /**
- * docStore.ts - Minimal document cache to bypass React Router state limits.
- * Stores captured docs in memory (not history.state) so multi-photo runs
- * aren't truncated by the browser's history state size cap.
+ * docStore.ts - Document cache to bypass React Router state limits.
+ * Stores captured docs in module-level memory (survives re-renders,
+ * NOT one-shot — stays until explicitly cleared).
  */
 
 export interface CapturedDoc {
@@ -16,13 +16,15 @@ let pendingDocs: CapturedDoc[] | null = null;
 export const docStore = {
   set(docs: CapturedDoc[]) {
     pendingDocs = docs;
+    console.log('[docStore] set', docs.length, 'docs');
   },
+  /** Returns docs WITHOUT clearing — safe across re-renders / StrictMode */
   get(): CapturedDoc[] | null {
-    const docs = pendingDocs;
-    pendingDocs = null; // one-shot read
-    return docs;
+    console.log('[docStore] get →', pendingDocs?.length ?? 0, 'docs');
+    return pendingDocs;
   },
   clear() {
+    console.log('[docStore] cleared');
     pendingDocs = null;
   },
 };
