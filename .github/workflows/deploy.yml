@@ -84,13 +84,14 @@ jobs:
           cd ../app
           npm install
           VITE_API_URL=https://snap-it-forget-it-api-extract.fmeconsultants1.workers.dev npm run build
-          # Upload dist files to R2 (frontend/ prefix)
+          # Upload dist files to R2 (frontend/ prefix) — use wrangler from worker dir
+          WRANGLER="../../worker/node_modules/.bin/wrangler"
           cd dist
           for f in index.html manifest.webmanifest registerSW.js sw.js workbox-e4022e15.js; do
-            [ -f "$f" ] && npx wrangler r2 object put "snap-it-documents/frontend/$f" --file="$f" 2>&1 | tail -1
+            [ -f "$f" ] && "$WRANGLER" r2 object put "snap-it-documents/frontend/$f" --file="$f" 2>&1 | tail -1
           done
           for f in assets/*; do
-            [ -f "$f" ] && npx wrangler r2 object put "snap-it-documents/frontend/$f" --file="$f" 2>&1 | tail -1
+            [ -f "$f" ] && "$WRANGLER" r2 object put "snap-it-documents/frontend/$f" --file="$f" 2>&1 | tail -1
           done
           echo "Frontend uploaded to R2"
 
