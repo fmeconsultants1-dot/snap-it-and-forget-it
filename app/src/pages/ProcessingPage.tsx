@@ -3,8 +3,9 @@
  * Processing queue screen. Sequential Gemini processing, Document 1-N with thumbs.
  */
 import { useEffect, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { scanApi, ScanResult } from '../lib/api';
+import { docStore } from '../lib/docStore';
 
 interface Doc {
   dataUrl: string;
@@ -23,9 +24,8 @@ interface ProcessedDoc {
 }
 
 export default function ProcessingPage() {
-  const location = useLocation();
   const navigate = useNavigate();
-  const documents: Doc[] = location.state?.documents ?? [];
+  const documents = docStore.get() ?? [];
   const runIdRef = useRef<string | null>(null);
   const [items, setItems] = useState<ProcessedDoc[]>(
     documents.map(doc => ({ doc, status: 'PENDING' as DocStatus }))
@@ -67,6 +67,7 @@ export default function ProcessingPage() {
           documentId: '', extractionId: '', ledgerEntryId: '',
           journalEntryId: '', refNumber: '', status: 'FAILED',
           error: err.message, extraction: {} as any,
+          lineCount: 0, itcFlags: [],
         };
         collected.push(failResult);
         setItems(prev => prev.map((item, idx) => idx === i ? { ...item, status: 'FAILED', error: err.message } : item));

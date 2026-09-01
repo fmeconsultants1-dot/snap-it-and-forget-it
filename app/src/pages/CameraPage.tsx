@@ -9,6 +9,7 @@
 
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { docStore } from '../lib/docStore';
 
 interface CapturedDoc {
   dataUrl: string;
@@ -82,7 +83,8 @@ export default function CameraPage() {
   const handleDone = () => {
     if (captured.length === 0) return;
     streamRef.current?.getTracks().forEach(t => t.stop());
-    navigate('/processing', { state: { documents: captured } });
+    docStore.set(captured);
+    navigate('/processing');
   };
 
   const flipCamera = () => {
@@ -115,7 +117,8 @@ export default function CameraPage() {
                 });
               }
               if (docs.length > 0) {
-                navigate('/processing', { state: { documents: docs } });
+                docStore.set(docs);
+                navigate('/processing');
               }
             }}
           />

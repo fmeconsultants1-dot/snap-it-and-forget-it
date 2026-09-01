@@ -96,7 +96,7 @@ Return ONLY the JSON object. No markdown. No explanation.
 
 export class GeminiAdapter {
   private apiKey: string;
-  private model: string = 'gemini-1.5-flash';
+  private model: string = 'gemini-3.5-flash';
   private apiBase = 'https://generativelanguage.googleapis.com/v1beta';
 
   constructor(apiKey: string) {

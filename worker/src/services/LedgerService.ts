@@ -265,7 +265,7 @@ export class LedgerService {
     q += ' ORDER BY created_at DESC';
     q += ` LIMIT ${filter.limit ?? 100} OFFSET ${filter.offset ?? 0}`;
     const r = await this.db.prepare(q).bind(...p).all();
-    return r.results as LedgerEntryRow[];
+    return (r.results as unknown) as LedgerEntryRow[];
   }
 
   async getJournalEntries(filter: { runId?: string; dateFilter?: string; entryType?: string; status?: string }): Promise<JournalEntryRow[]> {
@@ -282,10 +282,10 @@ export class LedgerService {
     if (filter.status)    { q += ' AND je.status=?';     p.push(filter.status); }
     q += ' ORDER BY je.created_at DESC LIMIT 200';
     const r = await this.db.prepare(q).bind(...p).all();
-    const entries = r.results as JournalEntryRow[];
+    const entries = (r.results as unknown) as JournalEntryRow[];
     for (const e of entries) {
       const lines = await this.db.prepare('SELECT * FROM journal_lines WHERE journal_entry_id=? ORDER BY line_order').bind(e.id).all();
-      e.lines = lines.results as JournalLineRow[];
+      e.lines = (lines.results as unknown) as JournalLineRow[];
     }
     return entries;
   }
