@@ -55,11 +55,14 @@ export class ScanService {
     runId: string; sequence: number;
     imageBase64: string; mimeType: string; fileName?: string;
   }): Promise<{
-    documentId: string; extractionId: string;
-    ledgerEntryId: string; journalEntryId: string;
-    refNumber: string; lineCount: number; itcFlags: string[];
-    extraction: ExtractionResult;
-    status: 'DONE' | 'FAILED'; error?: string;
+    results: {
+      documentId: string; extractionId: string;
+      ledgerEntryId: string; journalEntryId: string;
+      refNumber: string; lineCount: number; itcFlags: string[];
+      extraction: ExtractionResult;
+      status: 'DONE' | 'FAILED'; error?: string;
+    }[];
+    detectedCount: number;
   }> {
     const documentId = generateId();
     const fileName = params.fileName ?? `doc-${params.sequence}-${Date.now()}.jpg`;
@@ -74,48 +77,72 @@ export class ScanService {
       const imageBytes = Uint8Array.from(atob(params.imageBase64), c => c.charCodeAt(0));
       await this.r2.put(r2Key, imageBytes, { httpMetadata: { contentType: params.mimeType } });
 
-      // Gemini extraction
-      const extraction = await this.gemini.extractDocument(params.imageBase64, params.mimeType);
+      // Gemini multi-document detection + extraction
+      let extractions: ExtractionResult[] = [];
+      try {
+        extractions = await this.gemini.extractDocuments(params.imageBase64, params.mimeType);
+      } catch (multiDocErr: any) {
+        // Fallback: if multi-doc detection fails, treat entire image as one document
+        console.warn(`[ScanService] Multi-doc detection failed (${multiDocErr.message}), falling back to single-document extraction`);
+        const single = await this.gemini.extractDocument(params.imageBase64, params.mimeType);
+        extractions = [single];
+      }
 
-      // Persist extraction
-      const extractionId = generateId();
-      await this.db.prepare(`
-        INSERT INTO extractions
-          (id, document_id, doc_type, vendor, date, total, subtotal, tax,
-           tax_gst, tax_hst, tax_pst, payment_method, category, description,
-           issuer, line_items, raw_fields,
-           confidence_vendor, confidence_date, confidence_total, confidence_category,
-           gemini_model, extracted_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-      `).bind(
-        extractionId, documentId,
-        extraction.doc_type, extraction.vendor, extraction.date,
-        extraction.total, extraction.subtotal, extraction.tax,
-        extraction.tax_gst, extraction.tax_hst, extraction.tax_pst,
-        extraction.payment_method, extraction.category, extraction.description,
-        extraction.issuer,
-        JSON.stringify(extraction.line_items),
-        JSON.stringify(extraction.raw_fields),
-        extraction.confidence_vendor, extraction.confidence_date,
-        extraction.confidence_total, extraction.confidence_category,
-        extraction.gemini_model
-      ).run();
+      // Fallback: if no documents detected, treat entire image as one document
+      const docsToProcess = extractions.length > 0 ? extractions : [await this.gemini.extractDocument(params.imageBase64, params.mimeType)];
 
-      // Create ledger + journal (multi-line, SUM(DR)=SUM(CR))
-      const { ledgerEntryId, journalEntryId, refNumber, lineCount, itcFlags } =
-        await this.ledger.createFromExtraction(extraction, extractionId, documentId, params.runId);
+      const results: Awaited<ReturnType<ScanService['processDocument']>>['results'] = [];
+      let totalAmount = 0;
+
+      for (let idx = 0; idx < docsToProcess.length; idx++) {
+        const extraction = docsToProcess[idx]!;
+        totalAmount += extraction.total ?? 0;
+
+        // Persist extraction
+        const extractionId = generateId();
+        await this.db.prepare(`
+          INSERT INTO extractions
+            (id, document_id, doc_type, vendor, date, total, subtotal, tax,
+             tax_gst, tax_hst, tax_pst, payment_method, category, description,
+             issuer, line_items, raw_fields,
+             confidence_vendor, confidence_date, confidence_total, confidence_category,
+             gemini_model, extracted_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+        `).bind(
+          extractionId, documentId,
+          extraction.doc_type, extraction.vendor, extraction.date,
+          extraction.total, extraction.subtotal, extraction.tax,
+          extraction.tax_gst, extraction.tax_hst, extraction.tax_pst,
+          extraction.payment_method, extraction.category, extraction.description,
+          extraction.issuer,
+          JSON.stringify(extraction.line_items),
+          JSON.stringify(extraction.raw_fields),
+          extraction.confidence_vendor, extraction.confidence_date,
+          extraction.confidence_total, extraction.confidence_category,
+          extraction.gemini_model
+        ).run();
+
+        // Create ledger + journal
+        const { ledgerEntryId, journalEntryId, refNumber, lineCount, itcFlags } =
+          await this.ledger.createFromExtraction(extraction, extractionId, documentId, params.runId);
+
+        results.push({
+          documentId, extractionId, ledgerEntryId, journalEntryId,
+          refNumber, lineCount, itcFlags, extraction, status: 'DONE' as const
+        });
+      }
 
       // Mark document done
       await this.db.prepare(
         "UPDATE documents SET status='DONE', processed_at=datetime('now') WHERE id=?"
       ).bind(documentId).run();
 
-      // Update run stats
+      // Update run stats with detected count and total
       await this.db.prepare(
-        'UPDATE scan_runs SET processed_count=processed_count+1, total_amount=total_amount+? WHERE id=?'
-      ).bind(extraction.total ?? 0, params.runId).run();
+        'UPDATE scan_runs SET processed_count=processed_count+?, total_amount=total_amount+? WHERE id=?'
+      ).bind(docsToProcess.length, totalAmount, params.runId).run();
 
-      return { documentId, extractionId, ledgerEntryId, journalEntryId, refNumber, lineCount, itcFlags, extraction, status: 'DONE' };
+      return { results, detectedCount: docsToProcess.length };
 
     } catch (err: any) {
       await this.db.prepare(
@@ -125,17 +152,21 @@ export class ScanService {
         'UPDATE scan_runs SET failed_count=failed_count+1 WHERE id=?'
       ).bind(params.runId).run();
       return {
-        documentId, extractionId: '', ledgerEntryId: '', journalEntryId: '',
-        refNumber: '', lineCount: 0, itcFlags: [],
-        extraction: {} as ExtractionResult,
-        status: 'FAILED', error: err.message,
+        results: [{
+          documentId, extractionId: '', ledgerEntryId: '', journalEntryId: '',
+          refNumber: '', lineCount: 0, itcFlags: [],
+          extraction: {} as ExtractionResult,
+          status: 'FAILED' as const, error: err.message,
+        }],
+        detectedCount: 0
       };
     }
   }
 
   async finalizeRun(runId: string): Promise<void> {
+    // Update document_count to actual detected count
     await this.db.prepare(
-      "UPDATE scan_runs SET status='COMPLETE', completed_at=datetime('now') WHERE id=?"
+      "UPDATE scan_runs SET document_count=processed_count+failed_count, status='COMPLETE', completed_at=datetime('now') WHERE id=?"
     ).bind(runId).run();
   }
 

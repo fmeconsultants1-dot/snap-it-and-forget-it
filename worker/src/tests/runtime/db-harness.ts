@@ -108,7 +108,7 @@ export async function seedOriginalEntry(db: D1Adapter, params: {
 
   await db.prepare("INSERT INTO scan_runs (id,document_count,status,created_at) VALUES (?,1,'COMPLETE',datetime('now'))").bind(runId).run();
   await db.prepare("INSERT INTO documents (id,run_id,sequence,status,created_at) VALUES (?,?,1,'DONE',datetime('now'))").bind(documentId, runId).run();
-  await db.prepare(`INSERT INTO extractions (id,document_id,doc_type,vendor,date,total,subtotal,tax_gst,tax_hst,tax_pst,payment_method,category,confidence_total,gemini_model,extracted_at) VALUES (?,?,'RECEIPT',?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`).bind(extractionId, documentId, params.vendor, params.date, params.amount, params.subtotal, params.gst, params.hst, params.pst, params.paymentMethod, params.category, 0.95, 'gemini-1.5-flash').run();
+  await db.prepare(`INSERT INTO extractions (id,document_id,doc_type,vendor,date,total,subtotal,tax_gst,tax_hst,tax_pst,payment_method,category,confidence_total,gemini_model,extracted_at) VALUES (?,?,'RECEIPT',?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`).bind(extractionId, documentId, params.vendor, params.date, params.amount, params.subtotal, params.gst, params.hst, params.pst, params.paymentMethod, params.category, 0.95, 'gemini-3.6-flash').run();
 
   const itcRegistered = params.itcRegistered ?? false;
   const recoverable = params.gst + params.hst;

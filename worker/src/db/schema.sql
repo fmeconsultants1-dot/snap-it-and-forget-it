@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS extractions (
   confidence_date REAL,
   confidence_total REAL,
   confidence_category REAL,
-  gemini_model TEXT DEFAULT 'gemini-1.5-flash',
+  gemini_model TEXT DEFAULT 'gemini-3.6-flash',
   extracted_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

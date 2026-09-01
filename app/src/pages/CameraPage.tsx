@@ -10,13 +10,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { docStore } from '../lib/docStore';
-
-interface CapturedDoc {
-  dataUrl: string;
-  base64: string;
-  mimeType: string;
-  fileName: string;
-}
+import type { CapturedDoc } from '../lib/docStore';
 
 export default function CameraPage() {
   const navigate = useNavigate();

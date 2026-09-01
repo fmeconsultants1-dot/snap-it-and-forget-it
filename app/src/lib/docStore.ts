@@ -1,27 +1,30 @@
 /**
- * docStore.ts - Snap It & Forget It
- * Module-level cache to pass documents between CameraPage → ProcessingPage.
- * React Router location.state has a ~640KB limit and silently truncates arrays.
- * This store survives re-renders, StrictMode remounts, and navigation.
+ * docStore.ts - Document cache to bypass React Router state limits.
+ * Stores captured docs in module-level memory (survives re-renders,
+ * NOT one-shot — stays until explicitly cleared).
  */
 
-interface Doc {
+export interface CapturedDoc {
   dataUrl: string;
   base64: string;
   mimeType: string;
   fileName: string;
 }
 
-let docs: Doc[] | null = null;
+let pendingDocs: CapturedDoc[] | null = null;
 
 export const docStore = {
-  set(documents: Doc[]) {
-    docs = documents;
+  set(docs: CapturedDoc[]) {
+    pendingDocs = docs;
+    console.log('[docStore] set', docs.length, 'docs');
   },
-  get(): Doc[] | null {
-    return docs;
+  /** Returns docs WITHOUT clearing — safe across re-renders / StrictMode */
+  get(): CapturedDoc[] | null {
+    console.log('[docStore] get →', pendingDocs?.length ?? 0, 'docs');
+    return pendingDocs;
   },
   clear() {
-    docs = null;
+    console.log('[docStore] cleared');
+    pendingDocs = null;
   },
 };

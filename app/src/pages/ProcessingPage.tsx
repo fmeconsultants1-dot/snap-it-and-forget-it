@@ -3,7 +3,7 @@
  * Processing queue screen. Sequential Gemini processing, Document 1-N with thumbs.
  */
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { scanApi, ScanResult } from '../lib/api';
 import { docStore } from '../lib/docStore';
 
@@ -24,8 +24,10 @@ interface ProcessedDoc {
 }
 
 export default function ProcessingPage() {
+  const location = useLocation();
   const navigate = useNavigate();
-  const documents = docStore.get() ?? [];
+  const documents: Doc[] = docStore.get() ?? [];
+  console.log('[ProcessingPage] documents count:', documents.length);
   const runIdRef = useRef<string | null>(null);
   const [items, setItems] = useState<ProcessedDoc[]>(
     documents.map(doc => ({ doc, status: 'PENDING' as DocStatus }))
@@ -66,8 +68,8 @@ export default function ProcessingPage() {
         const failResult: ScanResult = {
           documentId: '', extractionId: '', ledgerEntryId: '',
           journalEntryId: '', refNumber: '', status: 'FAILED',
-          error: err.message, extraction: {} as any,
           lineCount: 0, itcFlags: [],
+          error: err.message, extraction: {} as any,
         };
         collected.push(failResult);
         setItems(prev => prev.map((item, idx) => idx === i ? { ...item, status: 'FAILED', error: err.message } : item));
@@ -75,6 +77,7 @@ export default function ProcessingPage() {
     }
 
     try { await scanApi.finalizeRun(rId); } catch { /* non-fatal */ }
+    docStore.clear();
     setResults(collected);
     setAllDone(true);
   }

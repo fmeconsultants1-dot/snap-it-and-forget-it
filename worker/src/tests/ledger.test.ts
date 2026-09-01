@@ -64,7 +64,7 @@ const UNREGISTERED_CONFIG: BusinessConfig = {
 };
 
 function buildLines(
-  extraction: Partial<ExtractionResult> & { doc_type: string; total: number },
+  extraction: Partial<ExtractionResult> & { doc_type: 'RECEIPT' | 'INVOICE' | 'DOCUMENT' | 'STATEMENT' | string; total: number },
   config: BusinessConfig = UNREGISTERED_CONFIG
 ): { lines: JournalLine[]; flags: string[] } {
   const flags: string[] = [];
@@ -161,7 +161,7 @@ function assertBalanced(lines: JournalLine[]) {
 
 describe('T1 — Simple 2-line: cash expense (unregistered business)', () => {
   const extraction = {
-    doc_type: 'RECEIPT',
+    doc_type: 'RECEIPT' as const,
     vendor: 'Cactus Club Cafe',
     total: 96.34,
     subtotal: 91.75,
@@ -196,7 +196,7 @@ describe('T1 — Simple 2-line: cash expense (unregistered business)', () => {
 
 describe('T2 — 3-line: expense + recoverable GST + bank payment (registered business)', () => {
   const extraction = {
-    doc_type: 'RECEIPT',
+    doc_type: 'RECEIPT' as const,
     vendor: 'Real Canadian Superstore',
     total: 69.14,
     subtotal: 65.85,
@@ -238,7 +238,7 @@ describe('T2 — 3-line: expense + recoverable GST + bank payment (registered bu
 
 describe('T3 — GST + PST: recoverable GST, PST folds into expense cost', () => {
   const extraction = {
-    doc_type: 'RECEIPT',
+    doc_type: 'RECEIPT' as const,
     vendor: 'Staples',
     total: 113.00,
     subtotal: 100.00,
@@ -278,7 +278,7 @@ describe('T3 — GST + PST: recoverable GST, PST folds into expense cost', () =>
 
 describe('T4 — AP invoice: DR Expense + DR GST Recoverable / CR Accounts Payable', () => {
   const extraction = {
-    doc_type: 'INVOICE',
+    doc_type: 'INVOICE' as const,
     vendor: "Darcy's Auto Service",
     total: 695.23,
     subtotal: 620.76,
@@ -318,7 +318,7 @@ describe('T5 — Split-category (simulated): no multi-expense split yet, but bal
   // a manual split workflow (future). This test verifies that even when
   // a high-value mixed receipt comes in, the engine still balances.
   const extraction = {
-    doc_type: 'RECEIPT',
+    doc_type: 'RECEIPT' as const,
     vendor: 'Costco',
     total: 254.80,
     subtotal: 242.67,
@@ -346,7 +346,7 @@ describe('T5 — Split-category (simulated): no multi-expense split yet, but bal
 
 describe('T6 — Owner-paid (no ITC registration): full amount to expense', () => {
   const extraction = {
-    doc_type: 'RECEIPT',
+    doc_type: 'RECEIPT' as const,
     vendor: 'ICBC',
     total: 267.08,
     subtotal: 267.08,
@@ -385,7 +385,7 @@ describe('T7 — Refund/credit: negative amount, reversed lines still balanced',
   // Proper refund handling: separate REFUND doc_type or manual journal entry.
   // This test documents current behavior and the expected future extension.
   const extraction = {
-    doc_type: 'RECEIPT',
+    doc_type: 'RECEIPT' as const,
     vendor: 'Amazon Return',
     total: -45.00, // Negative — refund
     subtotal: -42.86,
@@ -414,7 +414,7 @@ describe('T7 — Refund/credit: negative amount, reversed lines still balanced',
 
 describe('T8 — Mixed personal/business: low confidence → ITC_DOCUMENTATION_INCOMPLETE, no recoverable line', () => {
   const extraction = {
-    doc_type: 'RECEIPT',
+    doc_type: 'RECEIPT' as const,
     vendor: 'Rogers',
     total: 120.00,
     subtotal: 106.19,
