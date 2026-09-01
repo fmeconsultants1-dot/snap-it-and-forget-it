@@ -133,7 +133,7 @@ export default {
           mimeType: body.mimeType ?? 'image/jpeg',
           fileName: body.fileName,
         });
-        return json(result, result.status === 'DONE' ? 200 : 422, origin);
+        return json(result, result.results[0]?.status === 'DONE' ? 200 : 422, origin);
       }
 
       // 5. POST /api/scan/run/:runId/finalize
