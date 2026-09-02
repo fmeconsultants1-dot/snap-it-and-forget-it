@@ -30,10 +30,10 @@ export default function ResultsPage() {
       <p className="subtext">{successful.length} of {results.length} processed successfully</p>
 
       {results.map((result, idx) => {
-        const ex = result.extraction;
+        const ex = result.extraction ?? {};
         const isExpanded = expanded.has(idx);
         const vendor = ex?.vendor ?? ex?.issuer ?? 'Unknown';
-        const amount = ex?.total ?? 0;
+        const amount = typeof ex?.total === 'number' ? ex.total : parseFloat(ex?.total as any) || 0;
         const docType = ex?.doc_type ?? 'DOCUMENT';
         const isFailed = result.status === 'FAILED';
         const itcFlags: string[] = (result as any).itcFlags ?? [];
@@ -69,12 +69,17 @@ export default function ResultsPage() {
                   <div className="field-row" style={{ alignItems: 'flex-start' }}>
                     <span className="field-label">line items</span>
                     <div style={{ flex: 1, textAlign: 'right' }}>
-                      {ex.line_items.map((li, li_idx) => (
-                        <div key={li_idx} style={{ fontSize: 12, marginBottom: 2 }}>
-                          <span style={{ color: 'var(--white-dim)' }}>{li.name} \u00D7{li.quantity} @${li.unit_price.toFixed(2)} </span>
-                          <span className="field-value gold">${li.total.toFixed(2)}</span>
-                        </div>
-                      ))}
+                      {ex.line_items.map((li, li_idx) => {
+                        const qty = typeof li.quantity === 'number' ? li.quantity : parseFloat(li.quantity as any) || 1;
+                        const up = typeof li.unit_price === 'number' ? li.unit_price : parseFloat(li.unit_price as any) || 0;
+                        const tot = typeof li.total === 'number' ? li.total : parseFloat(li.total as any) || 0;
+                        return (
+                          <div key={li_idx} style={{ fontSize: 12, marginBottom: 2 }}>
+                            <span style={{ color: 'var(--white-dim)' }}>{li.name ?? 'Item'} ×{qty} @${up.toFixed(2)} </span>
+                            <span className="field-value gold">${tot.toFixed(2)}</span>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
