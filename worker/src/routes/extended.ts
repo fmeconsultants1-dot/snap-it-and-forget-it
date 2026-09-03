@@ -1,7 +1,7 @@
 /**
  * extended.ts - FME Mission 001 - Snap It & Forget It
- * Extended API routes: reconcile, tax, AP/AR, export, refund, split
- * Routes 14-25
+ * Extended API routes: reconcile, tax, AP/AR, export, refund, split, admin
+ * Routes 14-26
  */
 import { ReconciliationService } from '../services/ReconciliationService';
 import { GSTService } from '../services/GSTService';
@@ -197,6 +197,62 @@ export async function handleExtended(
       'SELECT * FROM split_lines WHERE ledger_entry_id = ? ORDER BY line_order'
     ).bind(splitsReadMatch[1]!).all();
     return json({ splits: result.results, count: result.results.length }, 200, originHeader);
+  }
+
+  // 26. POST /api/admin/cleanup-stuck-runs
+  // Safely marks stuck PROCESSING scan_runs as FAILED_ABANDONED.
+  // Criterion: status=PROCESSING AND created_at < 30 minutes ago AND completed_at IS NULL.
+  // Does NOT touch ledger_entries, journal_entries, journal_lines, documents, or R2.
+  // All valid ledger data and source documents are fully preserved.
+  if (path === '/api/admin/cleanup-stuck-runs' && method === 'POST') {
+    // Find stuck runs
+    const stuck = await env.DB.prepare(`
+      SELECT id, created_at, document_count, processed_count, failed_count
+      FROM scan_runs
+      WHERE status = 'PROCESSING'
+        AND completed_at IS NULL
+        AND created_at < datetime('now', '-30 minutes')
+      ORDER BY created_at ASC
+    `).all();
+
+    const stuckIds = (stuck.results as any[]).map(r => r.id as string);
+
+    if (stuckIds.length === 0) {
+      return json({ cleaned: 0, ids: [], message: 'No stuck runs found.' }, 200, originHeader);
+    }
+
+    // Mark each stuck run as FAILED_ABANDONED with a completed_at timestamp.
+    // Uses individual updates (D1 does not support WHERE id IN (?) with arrays).
+    const stmts: D1PreparedStatement[] = stuckIds.map(id =>
+      env.DB.prepare(`
+        UPDATE scan_runs
+        SET status = 'FAILED_ABANDONED',
+            completed_at = datetime('now')
+        WHERE id = ? AND status = 'PROCESSING' AND completed_at IS NULL
+      `).bind(id)
+    );
+
+    // Also log each cleanup to audit_log
+    for (const run of stuck.results as any[]) {
+      stmts.push(
+        env.DB.prepare(`
+          INSERT INTO audit_log(entity_type, entity_id, action, before_state, after_state, performed_at)
+          VALUES('scan_runs', ?, 'CLEANUP_STUCK', ?, ?, datetime('now'))
+        `).bind(
+          run.id,
+          JSON.stringify({ status: 'PROCESSING', created_at: run.created_at }),
+          JSON.stringify({ status: 'FAILED_ABANDONED', reason: 'stuck >30min, no ledger data affected' })
+        )
+      );
+    }
+
+    await env.DB.batch(stmts);
+
+    return json({
+      cleaned: stuckIds.length,
+      ids: stuckIds,
+      message: `${stuckIds.length} stuck run(s) marked FAILED_ABANDONED. Ledger data and documents untouched.`,
+    }, 200, originHeader);
   }
 
   return null;
