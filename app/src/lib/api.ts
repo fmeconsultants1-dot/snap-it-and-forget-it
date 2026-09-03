@@ -22,6 +22,9 @@ export interface ExtractionData {
   total: number | null;
   subtotal: number | null;
   tax: number | null;
+  tax_gst?: number | null;
+  tax_hst?: number | null;
+  tax_pst?: number | null;
   payment_method: string | null;
   category: string | null;
   description: string | null;
@@ -88,6 +91,25 @@ export interface JournalEntry {
   lines: JournalLine[];
 }
 
+/**
+ * Fields the user may correct on the review screen before approving.
+ * All fields are optional — only send what was changed.
+ */
+export interface ReviewCorrections {
+  vendor?: string | null;
+  date?: string | null;
+  category?: string | null;
+  subtotal?: number | null;
+  tax?: number | null;
+  tax_gst?: number | null;
+  tax_hst?: number | null;
+  tax_pst?: number | null;
+  total?: number | null;
+  payment_method?: string | null;
+  description?: string | null;
+  doc_type?: string | null;
+}
+
 export const scanApi = {
   createRun: (documentCount: number) =>
     request<{ runId: string }>('/api/scan/run', { method: 'POST', body: JSON.stringify({ documentCount }) }),
@@ -118,7 +140,17 @@ export const ledgerApi = {
   },
   approve: (id: string) =>
     request<{ success: boolean }>(`/api/ledger/${id}/approve`, { method: 'POST' }),
-  exportCsv: () => `${API_URL}/api/export/ledger?format=csv`,
+  /**
+   * Stage 6 — updateAndApprove.
+   * Sends user corrections to the backend, which rebuilds journal lines
+   * from corrected values and marks the entry APPROVED atomically.
+   */
+  updateAndApprove: (id: string, corrections: ReviewCorrections) =>
+    request<{ success: boolean; isBalanced: boolean; itcFlags: string[] }>(
+      `/api/ledger/${id}`,
+      { method: 'PATCH', body: JSON.stringify(corrections) }
+    ),
+  exportCsv: () => `${API_URL}/api/export/ledger`,
   getSplits: (id: string) =>
     request<{ splits: any[]; count: number }>(`/api/ledger/${id}/splits`),
 };
