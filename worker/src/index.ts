@@ -1,7 +1,7 @@
 /**
  * index.ts - FME Mission 001 - Snap It & Forget It
- * Cloudflare Worker entry point. 25 routes total.
- * index.ts: 13 | extended.ts: 12
+ * Cloudflare Worker entry point. 26 routes total.
+ * index.ts: 14 | extended.ts: 12
  */
 import { ScanService, Env } from './services/ScanService';
 import { LedgerService } from './services/LedgerService';
@@ -65,7 +65,6 @@ export default {
     }
 
     // ── STATIC FILE SERVING (frontend) ──
-    // Only serve static files for non-API paths (exclude /health and /health/full)
     if (!path.startsWith('/api/') && path !== '/health' && path !== '/health/full') {
       let filePath = path === '/' ? '/index.html' : path;
       const key = `frontend${filePath}`;
@@ -181,6 +180,7 @@ export default {
       }
 
       // 9. GET /api/ledger/:id
+      // Must come AFTER /api/ledger/journal to avoid prefix collision
       const ledgerGetMatch = path.match(/^\/api\/ledger\/([^/]+)$/);
       if (ledgerGetMatch && method === 'GET') {
         const ledger = new LedgerService(env.DB);
@@ -189,7 +189,15 @@ export default {
         return json(entry, 200, origin);
       }
 
-      // 10. POST /api/ledger/:id/approve
+      // 10. PATCH /api/ledger/:id  — Stage 6: user corrects + approves in one call
+      if (ledgerGetMatch && method === 'PATCH') {
+        const body = await request.json() as any;
+        const ledger = new LedgerService(env.DB);
+        const { isBalanced, itcFlags } = await ledger.updateAndApprove(ledgerGetMatch[1]!, body);
+        return json({ success: true, isBalanced, itcFlags }, 200, origin);
+      }
+
+      // 11. POST /api/ledger/:id/approve
       const approveMatch = path.match(/^\/api\/ledger\/([^/]+)\/approve$/);
       if (approveMatch && method === 'POST') {
         const ledger = new LedgerService(env.DB);
@@ -197,7 +205,7 @@ export default {
         return json({ success: true }, 200, origin);
       }
 
-      // 10. GET /api/ledger/:id/source  (before /splits and /split to avoid prefix match)
+      // 12. GET /api/ledger/:id/source
       const sourceMatch = path.match(/^\/api\/ledger\/([^/]+)\/source$/);
       if (sourceMatch && method === 'GET') {
         const row = await env.DB.prepare(
@@ -213,7 +221,7 @@ export default {
         });
       }
 
-      // 11. POST /api/import/bank
+      // 13. POST /api/import/bank
       if (path === '/api/import/bank' && method === 'POST') {
         const body = await request.json() as any;
         const rows = body.rows ?? [];
@@ -228,7 +236,7 @@ export default {
         return json({ imported: ids.length, ids }, 201, origin);
       }
 
-      // 12. GET /api/export/ledger
+      // 14. GET /api/export/ledger
       if (path === '/api/export/ledger' && method === 'GET') {
         const ledger = new LedgerService(env.DB);
         const entries = await ledger.getLedgerEntries({ limit: 10000 });
@@ -246,7 +254,7 @@ export default {
         });
       }
 
-      // 13. GET /api/audit
+      // 15. GET /api/audit
       if (path === '/api/audit' && method === 'GET') {
         const result = await env.DB.prepare(
           'SELECT * FROM audit_log ORDER BY performed_at DESC LIMIT ?'
@@ -254,7 +262,7 @@ export default {
         return json({ entries: result.results }, 200, origin);
       }
 
-      // 14-25. Extended routes (reconcile, tax, AP, export, refund, split)
+      // 16-27. Extended routes (reconcile, tax, AP, export, refund, split, runs)
       const extended = await handleExtended(request, env as any, origin);
       if (extended) return extended;
 
