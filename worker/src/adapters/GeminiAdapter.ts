@@ -2,7 +2,7 @@
  * GeminiAdapter.ts
  * FME Mission 001 - Snap It & Forget It
  *
- * Wraps Google Gemini 1.5 Flash for multi-document receipt/invoice extraction.
+ * Wraps Google Gemini Flash for multi-document receipt/invoice extraction.
  * Returns structured data with per-field confidence scores matching the v1.0.0 baseline.
  *
  * Evidence baseline from screenshots:
@@ -11,6 +11,11 @@
  *   - line_items with name, qty, unit_price
  *   - payment_method: Credit / Debit / Cash
  *   - category: Food / Transport / Notice / etc.
+ *
+ * Model history:
+ *   gemini-1.5-flash   → shut down (all 1.x)
+ *   gemini-2.0-flash   → shut down June 1, 2026
+ *   gemini-3.5-flash   → CURRENT production model (as of Sept 2026)
  */
 
 export interface ExtractionResult {
@@ -141,7 +146,9 @@ Return ONLY the JSON object. No markdown. No explanation.
 `;
 
 export class GeminiAdapter {
-  private model: string = 'gemini-2.0-flash';
+  // gemini-3.5-flash: current production Flash model as of Sept 2026
+  // gemini-2.0-flash was shut down June 1, 2026
+  private model: string = 'gemini-3.5-flash';
   private apiBase = 'https://generativelanguage.googleapis.com/v1beta';
   private apiKey: string;
 
@@ -467,7 +474,8 @@ export class GeminiAdapter {
   }
 
   private clampConfidence(v: any): number {
-    const n = typeof v === 'number' ? v : 0;
+    const n = typeof v === 'number' ? v : parseFloat(v);
+    if (isNaN(n)) return 0;
     return Math.max(0, Math.min(1, n));
   }
 }
