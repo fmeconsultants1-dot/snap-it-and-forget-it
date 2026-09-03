@@ -112,6 +112,8 @@ h2 {
   border-radius: var(--radius);
   padding: 16px;
   margin-bottom: 12px;
+  border: 1px solid var(--border);
+  transition: border-color 0.2s;
 }
 
 .card-header {
@@ -149,10 +151,10 @@ h2 {
   background: transparent;
 }
 
-.doc-type-label.RECEIPT { color: var(--gold); }
-.doc-type-label.INVOICE { color: var(--orange); }
+.doc-type-label.RECEIPT  { color: var(--gold); }
+.doc-type-label.INVOICE  { color: var(--orange); }
 .doc-type-label.DOCUMENT { color: var(--gray-light); }
-.doc-type-label.STATEMENT { color: var(--gray-light); }
+.doc-type-label.STATEMENT{ color: var(--gray-light); }
 
 .date-label {
   font-size: 12px;
@@ -178,8 +180,72 @@ h2 {
   flex: 1;
 }
 
-.field-value.gold { color: var(--gold); }
+.field-value.gold   { color: var(--gold); }
 .field-value.orange { color: var(--orange); }
+
+/* ---- Review form (Stage 6) ---- */
+.review-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--gray);
+  text-transform: uppercase;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+.review-input {
+  display: block;
+  width: 100%;
+  background: #111111;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--white);
+  font-size: 15px;
+  font-family: var(--font);
+  padding: 10px 12px;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+  transition: border-color 0.15s;
+}
+
+.review-input:focus {
+  border-color: var(--gold);
+}
+
+.review-input::placeholder {
+  color: var(--gray);
+}
+
+/* number inputs — remove spinners */
+.review-input[type="number"]::-webkit-inner-spin-button,
+.review-input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.review-input[type="number"] { -moz-appearance: textfield; }
+
+/* select arrow */
+select.review-input {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23666' d='M6 8L0 0h12z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+  cursor: pointer;
+}
+
+select.review-input option {
+  background: #1a1a1a;
+  color: var(--white);
+}
+
+/* date input calendar icon colour */
+.review-input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.6);
+  cursor: pointer;
+}
 
 /* ---- Status badges ---- */
 .badge {
@@ -226,14 +292,8 @@ h2 {
   -webkit-tap-highlight-color: transparent;
 }
 
-.btn-primary:active {
-  background: var(--gold-dim);
-}
-
-.btn-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+.btn-primary:active  { background: var(--gold-dim); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ---- Secondary Button ---- */
 .btn-secondary {
@@ -294,7 +354,7 @@ h2 {
   color: var(--gold);
 }
 
-/* ---- View Toggle (Register / Accounting Journal) ---- */
+/* ---- View Toggle ---- */
 .view-toggle {
   display: flex;
   background: var(--bg-card);
@@ -341,24 +401,12 @@ h2 {
   border-bottom: 1px solid var(--border);
 }
 
-.ledger-date {
-  font-size: 13px;
-  color: var(--white);
-  font-weight: 500;
-}
-
-.ledger-type {
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  font-weight: 700;
-  color: var(--gray);
-  margin-top: 2px;
-}
-
+.ledger-date   { font-size: 13px; color: var(--white); font-weight: 500; }
+.ledger-type   { font-size: 9px; letter-spacing: 0.08em; font-weight: 700; color: var(--gray); margin-top: 2px; }
 .ledger-entity { font-size: 14px; font-weight: 600; color: var(--white); }
 .ledger-amount { font-size: 14px; font-weight: 700; text-align: right; }
-.ledger-amount.DEBIT { color: var(--orange); }
-.ledger-amount.CREDIT { color: var(--green); }
+.ledger-amount.DEBIT   { color: var(--orange); }
+.ledger-amount.CREDIT  { color: var(--green); }
 .ledger-amount.BALANCE { color: var(--white); }
 
 .ledger-amount-label {
@@ -383,24 +431,10 @@ h2 {
   margin-bottom: 10px;
 }
 
-.journal-meta {
-  font-size: 12px;
-  color: var(--gray-light);
-  margin-bottom: 6px;
-}
+.journal-meta   { font-size: 12px; color: var(--gray-light); margin-bottom: 6px; }
+.journal-vendor { font-size: 16px; font-weight: 700; color: var(--white); }
 
-.journal-vendor {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--white);
-}
-
-.journal-table {
-  width: 100%;
-  font-size: 13px;
-  margin-bottom: 8px;
-}
-
+.journal-table { width: 100%; font-size: 13px; margin-bottom: 8px; }
 .journal-table th {
   color: var(--gray);
   font-size: 10px;
@@ -409,13 +443,11 @@ h2 {
   text-align: left;
   font-weight: 600;
 }
-
 .journal-table th:last-child,
 .journal-table td:last-child { text-align: right; }
-
 .journal-table td { padding: 4px 0; }
 .journal-table td:nth-child(2) { color: var(--orange); font-weight: 600; }
-.journal-table td:nth-child(3) { color: var(--green); font-weight: 600; }
+.journal-table td:nth-child(3) { color: var(--green);  font-weight: 600; }
 
 .journal-footer {
   display: flex;
@@ -446,15 +478,10 @@ h2 {
   flex-shrink: 0;
 }
 
-.scan-doc-name {
-  flex: 1;
-  font-size: 15px;
-  font-weight: 500;
-}
-
-.scan-status-done { color: var(--green); font-size: 14px; font-weight: 600; }
-.scan-status-processing { color: var(--gold); font-size: 14px; }
-.scan-status-failed { color: var(--red); font-size: 14px; }
+.scan-doc-name           { flex: 1; font-size: 15px; font-weight: 500; }
+.scan-status-done        { color: var(--green); font-size: 14px; font-weight: 600; }
+.scan-status-processing  { color: var(--gold);  font-size: 14px; }
+.scan-status-failed      { color: var(--red);   font-size: 14px; }
 
 /* ---- Camera ---- */
 .camera-container {
