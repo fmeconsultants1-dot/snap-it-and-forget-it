@@ -147,7 +147,6 @@ function buildJournalLines(
   const exp = expenseAccount(extraction.category);
   const settle = settlementAccount(extraction, config, isInvoice);
 
-  // ITC determination
   const itcDet = itcConfig
     ? determineITC({
         doc_type: extraction.doc_type,
@@ -164,23 +163,19 @@ function buildJournalLines(
     itcFlags.push(...(itcDet.flags as string[]));
   }
 
-  // Expense debit
   const expDebitCents = itcDet.eligible
     ? subtotalCents + pstCents
     : totalCents;
 
   lines.push({ code: exp.code, name: exp.name, debitCents: expDebitCents, creditCents: 0, memo: `${extraction.doc_type}: ${extraction.vendor ?? extraction.issuer ?? 'Unknown'}` });
 
-  // GST/HST Recoverable debit
   if (itcDet.eligible && recoverableCents > 0) {
     lines.push({ code: ACCOUNTS.gstRecov.code, name: ACCOUNTS.gstRecov.name, debitCents: recoverableCents, creditCents: 0, memo: 'ITC' });
     itcFlags.push('ITC_ELIGIBLE');
   }
 
-  // Settlement credit
   lines.push({ code: settle.code, name: settle.name, debitCents: 0, creditCents: totalCents, memo: `Payment: ${extraction.payment_method ?? 'Cash'}` });
 
-  // Balance invariant
   const sumDR = lines.reduce((s, l) => s + l.debitCents, 0);
   const sumCR = lines.reduce((s, l) => s + l.creditCents, 0);
   if (Math.abs(sumDR - sumCR) > 1) {
@@ -265,28 +260,21 @@ export class LedgerService {
 
   /**
    * updateAndApprove — Stage 6 core method.
-   *
-   * Called when the user edits extracted fields on the review screen and taps Approve.
-   * Applies corrections to the existing NEEDS_REVIEW ledger entry, rebuilds journal
-   * lines from the corrected values, then marks both ledger_entry and journal_entry
-   * APPROVED — all in one atomic D1 batch.
-   *
-   * The original document in R2 is untouched. The document_id association is preserved.
-   * Only the extracted field values and derived journal lines change.
+   * Called when the user approves on the review screen.
+   * Applies corrections, rebuilds journal lines, marks APPROVED atomically.
+   * Original R2 document is untouched. document_id association preserved.
    */
   async updateAndApprove(
     ledgerEntryId: string,
     corrections: ReviewCorrections,
     approvedBy = 'user'
   ): Promise<{ isBalanced: boolean; itcFlags: string[] }> {
-    // 1. Load existing ledger entry to get entry_type, ref_number and current values
     const existing = await this.db
       .prepare('SELECT * FROM ledger_entries WHERE id=?')
       .bind(ledgerEntryId)
       .first() as any;
     if (!existing) throw new Error(`Ledger entry not found: ${ledgerEntryId}`);
 
-    // 2. Load existing journal entry id
     const jeRow = await this.db
       .prepare('SELECT id FROM journal_entries WHERE ledger_entry_id=? LIMIT 1')
       .bind(ledgerEntryId)
@@ -294,24 +282,23 @@ export class LedgerService {
     if (!jeRow) throw new Error(`Journal entry not found for ledger entry: ${ledgerEntryId}`);
     const jeId: string = jeRow.id;
 
-    // 3. Build a synthetic ExtractionResult from the corrected values.
-    //    Fields not supplied by the user fall back to whatever was already stored.
     const docType = (corrections.doc_type ?? existing.entry_type ?? 'RECEIPT') as ExtractionResult['doc_type'];
-    const vendor   = corrections.vendor   !== undefined ? corrections.vendor   : (existing.entity ?? null);
-    const date     = corrections.date     !== undefined ? corrections.date     : (existing.date ?? null);
-    const total    = corrections.total    !== undefined ? (corrections.total ?? 0) : (existing.amount ?? 0);
-    const category = corrections.category !== undefined ? corrections.category : null;
-    const paymentMethod = corrections.payment_method !== undefined ? corrections.payment_method : null;
-    const description   = corrections.description   !== undefined ? corrections.description   : null;
+    const vendor         = corrections.vendor          !== undefined ? corrections.vendor          : (existing.entity ?? null);
+    const date           = corrections.date            !== undefined ? corrections.date            : (existing.date ?? null);
+    const total          = corrections.total           !== undefined ? (corrections.total ?? 0)    : (existing.amount ?? 0);
+    const category       = corrections.category        !== undefined ? corrections.category        : null;
+    const paymentMethod  = corrections.payment_method  !== undefined ? corrections.payment_method  : null;
+    const description    = corrections.description     !== undefined ? corrections.description     : null;
 
-    // Tax breakdown: prefer explicit GST/HST/PST; fall back to generic tax split
-    const rawTax   = corrections.tax    ?? null;
-    const taxGst   = corrections.tax_gst !== undefined ? (corrections.tax_gst ?? 0)
-                   : (rawTax != null ? rawTax : 0); // treat generic tax as GST if no breakdown
-    const taxHst   = corrections.tax_hst !== undefined ? (corrections.tax_hst ?? 0) : 0;
-    const taxPst   = corrections.tax_pst !== undefined ? (corrections.tax_pst ?? 0) : 0;
+    const rawTax  = corrections.tax ?? null;
+    const taxGst  = corrections.tax_gst !== undefined ? (corrections.tax_gst ?? 0) : (rawTax != null ? rawTax : 0);
+    const taxHst  = corrections.tax_hst !== undefined ? (corrections.tax_hst ?? 0) : 0;
+    const taxPst  = corrections.tax_pst !== undefined ? (corrections.tax_pst ?? 0) : 0;
     const subtotal = corrections.subtotal !== undefined ? (corrections.subtotal ?? 0)
                    : Math.max(0, total - taxGst - taxHst - taxPst);
+
+    // FIX TS5076: parentheses added so ?? and || do not mix without parens
+    const taxValue: number | null = (rawTax ?? (taxGst + taxHst + taxPst)) || null;
 
     const syntheticExtraction: ExtractionResult = {
       doc_type: docType,
@@ -319,7 +306,7 @@ export class LedgerService {
       date,
       total,
       subtotal,
-      tax: rawTax ?? (taxGst + taxHst + taxPst) || null,
+      tax: taxValue,
       tax_gst: taxGst,
       tax_hst: taxHst,
       tax_pst: taxPst,
@@ -336,7 +323,6 @@ export class LedgerService {
       gemini_model: 'user-corrected',
     };
 
-    // 4. Rebuild journal lines from corrected values
     const { lines, itcFlags } = buildJournalLines(syntheticExtraction, this.config, this.itcConfig);
     const sumDRCents = lines.reduce((s, l) => s + l.debitCents, 0);
     const sumCRCents = lines.reduce((s, l) => s + l.creditCents, 0);
@@ -346,8 +332,6 @@ export class LedgerService {
     const isExpense = docType === 'RECEIPT' || docType === 'INVOICE';
     const safeDate = date ?? new Date().toISOString().slice(0, 10);
 
-    // 5. Build atomic batch: update ledger entry, update journal entry,
-    //    delete old journal lines, insert rebuilt lines, audit.
     const stmts: D1PreparedStatement[] = [];
 
     stmts.push(this.db.prepare(`
@@ -382,7 +366,6 @@ export class LedgerService {
       jeId
     ));
 
-    // Delete existing lines and replace with rebuilt ones
     stmts.push(this.db.prepare('DELETE FROM journal_lines WHERE journal_entry_id=?').bind(jeId));
 
     for (let i = 0; i < lines.length; i++) {
@@ -445,8 +428,8 @@ export class LedgerService {
     const r = await this.db.prepare(q).bind(...p).all();
     const entries = r.results as unknown as JournalEntryRow[];
     for (const e of entries) {
-      const lines = await this.db.prepare('SELECT * FROM journal_lines WHERE journal_entry_id=? ORDER BY line_order').bind(e.id).all();
-      e.lines = lines.results as unknown as JournalLineRow[];
+      const linesResult = await this.db.prepare('SELECT * FROM journal_lines WHERE journal_entry_id=? ORDER BY line_order').bind(e.id).all();
+      e.lines = linesResult.results as unknown as JournalLineRow[];
     }
     return entries;
   }
