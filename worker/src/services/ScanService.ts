@@ -164,10 +164,19 @@ export class ScanService {
   }
 
   async finalizeRun(runId: string): Promise<void> {
-    // Update document_count to actual detected count
+    const run = await this.db.prepare('SELECT * FROM scan_runs WHERE id=?').bind(runId).first() as any;
+    if (!run) return;
+
+    const processed = run.processed_count ?? 0;
+    const failed = run.failed_count ?? 0;
+    const total = processed + failed;
+
+    // Don't falsely claim completion if nothing succeeded
+    const status = processed === 0 && failed > 0 ? 'FAILED' : 'COMPLETE';
+
     await this.db.prepare(
-      "UPDATE scan_runs SET document_count=processed_count+failed_count, status='COMPLETE', completed_at=datetime('now') WHERE id=?"
-    ).bind(runId).run();
+      "UPDATE scan_runs SET document_count=?, status=?, completed_at=datetime('now') WHERE id=?"
+    ).bind(total, status, runId).run();
   }
 
   async getRun(runId: string) {

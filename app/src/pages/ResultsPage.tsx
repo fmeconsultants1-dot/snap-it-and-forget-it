@@ -126,7 +126,15 @@ function Field({ label, value }: { label: string; value: string | null | undefin
   );
 }
 
-function Confidence({ label, value }: { label: string; value: number }) {
+function Confidence({ label, value }: { label: string; value: number | null | undefined }) {
+  if (value == null || typeof value !== 'number' || Number.isNaN(value)) {
+    return (
+      <div className="field-row">
+        <span className="field-label">{label}</span>
+        <span className="field-value" style={{ color: 'var(--gray-light)' }}>N/A</span>
+      </div>
+    );
+  }
   const pct = Math.round(value * 100);
   return (
     <div className="field-row">
