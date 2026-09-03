@@ -67,6 +67,22 @@ export interface JournalEntryRow {
   lines: JournalLineRow[];
 }
 
+/** Fields the user may correct on the review screen before approving. */
+export interface ReviewCorrections {
+  vendor?: string | null;
+  date?: string | null;
+  category?: string | null;
+  subtotal?: number | null;
+  tax?: number | null;
+  tax_gst?: number | null;
+  tax_hst?: number | null;
+  tax_pst?: number | null;
+  total?: number | null;
+  payment_method?: string | null;
+  description?: string | null;
+  doc_type?: string | null;
+}
+
 const DEFAULT_CONFIG: BusinessConfig = {
   itc_registered: false,
   itc_registration_number: null,
@@ -245,6 +261,151 @@ export class LedgerService {
     await this.db.batch(stmts);
 
     return { ledgerEntryId: leId, journalEntryId: jeId, refNumber, lineCount: lines.length, itcFlags, isBalanced };
+  }
+
+  /**
+   * updateAndApprove — Stage 6 core method.
+   *
+   * Called when the user edits extracted fields on the review screen and taps Approve.
+   * Applies corrections to the existing NEEDS_REVIEW ledger entry, rebuilds journal
+   * lines from the corrected values, then marks both ledger_entry and journal_entry
+   * APPROVED — all in one atomic D1 batch.
+   *
+   * The original document in R2 is untouched. The document_id association is preserved.
+   * Only the extracted field values and derived journal lines change.
+   */
+  async updateAndApprove(
+    ledgerEntryId: string,
+    corrections: ReviewCorrections,
+    approvedBy = 'user'
+  ): Promise<{ isBalanced: boolean; itcFlags: string[] }> {
+    // 1. Load existing ledger entry to get entry_type, ref_number and current values
+    const existing = await this.db
+      .prepare('SELECT * FROM ledger_entries WHERE id=?')
+      .bind(ledgerEntryId)
+      .first() as any;
+    if (!existing) throw new Error(`Ledger entry not found: ${ledgerEntryId}`);
+
+    // 2. Load existing journal entry id
+    const jeRow = await this.db
+      .prepare('SELECT id FROM journal_entries WHERE ledger_entry_id=? LIMIT 1')
+      .bind(ledgerEntryId)
+      .first() as any;
+    if (!jeRow) throw new Error(`Journal entry not found for ledger entry: ${ledgerEntryId}`);
+    const jeId: string = jeRow.id;
+
+    // 3. Build a synthetic ExtractionResult from the corrected values.
+    //    Fields not supplied by the user fall back to whatever was already stored.
+    const docType = (corrections.doc_type ?? existing.entry_type ?? 'RECEIPT') as ExtractionResult['doc_type'];
+    const vendor   = corrections.vendor   !== undefined ? corrections.vendor   : (existing.entity ?? null);
+    const date     = corrections.date     !== undefined ? corrections.date     : (existing.date ?? null);
+    const total    = corrections.total    !== undefined ? (corrections.total ?? 0) : (existing.amount ?? 0);
+    const category = corrections.category !== undefined ? corrections.category : null;
+    const paymentMethod = corrections.payment_method !== undefined ? corrections.payment_method : null;
+    const description   = corrections.description   !== undefined ? corrections.description   : null;
+
+    // Tax breakdown: prefer explicit GST/HST/PST; fall back to generic tax split
+    const rawTax   = corrections.tax    ?? null;
+    const taxGst   = corrections.tax_gst !== undefined ? (corrections.tax_gst ?? 0)
+                   : (rawTax != null ? rawTax : 0); // treat generic tax as GST if no breakdown
+    const taxHst   = corrections.tax_hst !== undefined ? (corrections.tax_hst ?? 0) : 0;
+    const taxPst   = corrections.tax_pst !== undefined ? (corrections.tax_pst ?? 0) : 0;
+    const subtotal = corrections.subtotal !== undefined ? (corrections.subtotal ?? 0)
+                   : Math.max(0, total - taxGst - taxHst - taxPst);
+
+    const syntheticExtraction: ExtractionResult = {
+      doc_type: docType,
+      vendor,
+      date,
+      total,
+      subtotal,
+      tax: rawTax ?? (taxGst + taxHst + taxPst) || null,
+      tax_gst: taxGst,
+      tax_hst: taxHst,
+      tax_pst: taxPst,
+      payment_method: paymentMethod,
+      category,
+      description,
+      issuer: null,
+      line_items: [],
+      raw_fields: {},
+      confidence_vendor: 1.0,
+      confidence_date: 1.0,
+      confidence_total: 1.0,
+      confidence_category: 1.0,
+      gemini_model: 'user-corrected',
+    };
+
+    // 4. Rebuild journal lines from corrected values
+    const { lines, itcFlags } = buildJournalLines(syntheticExtraction, this.config, this.itcConfig);
+    const sumDRCents = lines.reduce((s, l) => s + l.debitCents, 0);
+    const sumCRCents = lines.reduce((s, l) => s + l.creditCents, 0);
+    const isBalanced = lines.length === 0 || Math.abs(sumDRCents - sumCRCents) <= 1;
+    const reviewNote = itcFlags.filter(f => f !== 'ITC_ELIGIBLE').join(', ') || null;
+    const entity = vendor ?? 'Unknown';
+    const isExpense = docType === 'RECEIPT' || docType === 'INVOICE';
+    const safeDate = date ?? new Date().toISOString().slice(0, 10);
+
+    // 5. Build atomic batch: update ledger entry, update journal entry,
+    //    delete old journal lines, insert rebuilt lines, audit.
+    const stmts: D1PreparedStatement[] = [];
+
+    stmts.push(this.db.prepare(`
+      UPDATE ledger_entries
+      SET entity=?, date=?, amount=?, debit_amount=?, credit_amount=?,
+          entry_type=?, review_note=?, status='APPROVED',
+          approved_at=datetime('now'), approved_by=?
+      WHERE id=?
+    `).bind(
+      entity, safeDate, total,
+      isExpense ? total : 0,
+      isExpense ? total : 0,
+      docType, reviewNote, approvedBy,
+      ledgerEntryId
+    ));
+
+    stmts.push(this.db.prepare(`
+      UPDATE journal_entries
+      SET entry_date=?, description=?, doc_type=?,
+          status='APPROVED', is_balanced=?,
+          total_debits=?, total_credits=?,
+          approved_at=datetime('now'), approved_by=?
+      WHERE id=?
+    `).bind(
+      safeDate,
+      description ?? entity,
+      docType,
+      isBalanced ? 1 : 0,
+      toDollars(sumDRCents),
+      toDollars(sumCRCents),
+      approvedBy,
+      jeId
+    ));
+
+    // Delete existing lines and replace with rebuilt ones
+    stmts.push(this.db.prepare('DELETE FROM journal_lines WHERE journal_entry_id=?').bind(jeId));
+
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i]!;
+      stmts.push(this.db.prepare(`
+        INSERT INTO journal_lines(id,journal_entry_id,account_code,account_name,debit,credit,memo,line_order)
+        VALUES(?,?,?,?,?,?,?,?)
+      `).bind(generateId(), jeId, l.code, l.name, toDollars(l.debitCents), toDollars(l.creditCents), l.memo, i + 1));
+    }
+
+    stmts.push(this.db.prepare(`
+      INSERT INTO audit_log(entity_type,entity_id,action,before_state,after_state,performed_at)
+      VALUES('ledger_entries',?,?,?,?,datetime('now'))
+    `).bind(
+      ledgerEntryId,
+      'UPDATE_AND_APPROVE',
+      JSON.stringify({ status: existing.status, amount: existing.amount, entity: existing.entity }),
+      JSON.stringify({ status: 'APPROVED', amount: total, entity, corrections })
+    ));
+
+    await this.db.batch(stmts);
+
+    return { isBalanced, itcFlags };
   }
 
   async approveLedgerEntry(id: string, approvedBy = 'user'): Promise<void> {
