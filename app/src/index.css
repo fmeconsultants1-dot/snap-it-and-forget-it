@@ -1,197 +1,345 @@
-/* Snap It & Forget It — Global Styles
+/* Snap It & Forget It — Global Design System
    FME Mission 001
-   Evidence baseline: dark #000000 background, #FFB800 gold accent, white text
-   Mobile-first, no horizontal scroll, safe-area insets */
+   Visual identity: black background, cream/warm-white text, FME orange/gold accent
+   Mobile-first. No generic blue. No browser-default controls. */
 
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg: #000000;
-  --bg-card: #1a1a1a;
-  --bg-card-hover: #222222;
-  --border: #2a2a2a;
-  --gold: #FFB800;
-  --gold-dim: #cc9200;
-  --white: #ffffff;
-  --white-dim: #cccccc;
-  --gray: #666666;
-  --gray-light: #888888;
-  --orange: #FF6B00;
-  --red: #FF4444;
-  --green: #22c55e;
-  --green-dim: #16a34a;
-  --receipt-color: #FFB800;
-  --invoice-color: #FF6B00;
-  --document-color: #888888;
+  /* Backgrounds */
+  --bg:           #0a0a0a;
+  --bg-card:      #141414;
+  --bg-card-2:    #1c1c1c;
+  --border:       #2a2a2a;
+
+  /* Text */
+  --cream:        #f5f0e8;
+  --cream-dim:    #a89f8c;
+  --white:        #ffffff;
+  --white-dim:    #cccccc;
+  --gray:         #555555;
+  --gray-light:   #888888;
+
+  /* Accent */
+  --gold:         #e8a020;
+  --gold-dim:     #b87d18;
+  --gold-bg:      rgba(232,160,32,0.08);
+  --orange:       #d4641a;
+
+  /* Status */
+  --red:          #e05050;
+  --green:        #4caf78;
+  --green-dim:    #2d7a50;
+
+  /* Document type colours */
+  --receipt-color:   #e8a020;
+  --invoice-color:   #d4641a;
   --statement-color: #888888;
-  --needs-review-bg: #3a1a00;
-  --needs-review-text: #FF8C00;
-  --draft-bg: #1a1a3a;
-  --draft-text: #8888ff;
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --radius: 12px;
-  --radius-sm: 8px;
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --document-color:  #666666;
+
+  /* Review / ITC */
+  --needs-review-bg:   rgba(232,160,32,0.10);
+  --needs-review-text: #e8a020;
+  --draft-bg:          rgba(100,100,200,0.10);
+  --draft-text:        #9090e0;
+
+  /* Layout */
+  --radius:     14px;
+  --radius-sm:  8px;
+  --font:       -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --safe-top:   env(safe-area-inset-top,    0px);
+  --safe-bot:   env(safe-area-inset-bottom, 0px);
 }
 
 html, body, #root {
   height: 100%;
-  width: 100%;
+  width:  100%;
   overflow-x: hidden;
-}
-
-body {
   background: var(--bg);
-  color: var(--white);
+  color: var(--cream);
   font-family: var(--font);
   font-size: 16px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
 
-#root {
+/* ===================== HOME SCREEN ===================== */
+
+.home-screen {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  min-height: 100vh;
+  padding: calc(16px + var(--safe-top)) 20px calc(24px + var(--safe-bot));
+  max-width: 480px;
+  margin: 0 auto;
+  background: var(--bg);
 }
 
-/* ---- Layout ---- */
+.home-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 32px;
+}
+
+.home-brand {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--gold);
+}
+
+.home-ledger-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--cream-dim);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 16px;
+  border-radius: 20px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Monthly summary */
+.home-summary {
+  margin-bottom: 28px;
+}
+
+.home-total {
+  font-size: 42px;
+  font-weight: 800;
+  color: var(--cream);
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.home-doc-count {
+  font-size: 14px;
+  color: var(--cream-dim);
+  margin-top: 4px;
+}
+
+/* Headline */
+.home-headline {
+  margin-bottom: 36px;
+}
+
+.home-headline-snap {
+  font-size: 48px;
+  font-weight: 900;
+  color: var(--cream);
+  letter-spacing: -0.03em;
+  line-height: 1.0;
+}
+
+.home-headline-forget {
+  font-size: 48px;
+  font-weight: 900;
+  color: var(--gold);
+  letter-spacing: -0.03em;
+  line-height: 1.0;
+}
+
+/* Circular camera button */
+.home-camera-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 36px;
+}
+
+.home-camera-btn {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: var(--gold);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 32px rgba(232,160,32,0.35);
+  transition: transform 0.15s, box-shadow 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.home-camera-btn:active {
+  transform: scale(0.93);
+  box-shadow: 0 4px 16px rgba(232,160,32,0.25);
+}
+
+.home-camera-hint {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--cream-dim);
+  letter-spacing: 0.01em;
+}
+
+/* Latest document card */
+.home-latest-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 20px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.home-latest-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  color: var(--cream-dim);
+  margin-bottom: 10px;
+}
+
+.home-latest-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.home-latest-vendor {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--cream);
+}
+
+.home-latest-meta {
+  font-size: 12px;
+  color: var(--cream-dim);
+  margin-top: 3px;
+}
+
+.home-latest-amount {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--gold);
+}
+
+.home-latest-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 10px;
+  color: var(--cream-dim);
+}
+.home-latest-status[data-status="APPROVED"] { color: var(--green); }
+.home-latest-status[data-status="NEEDS_REVIEW"] { color: var(--gold); }
+
+/* Bottom actions */
+.home-actions {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+.home-dashboard-btn {
+  display: block;
+  width: 100%;
+  padding: 18px;
+  background: var(--cream);
+  color: #0a0a0a;
+  font-size: 16px;
+  font-weight: 700;
+  border: none;
+  border-radius: 40px;
+  cursor: pointer;
+  text-align: center;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.15s;
+}
+.home-dashboard-btn:active { background: #ddd8ce; }
+
+/* ===================== GENERIC SCREEN ===================== */
+
 .screen {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 16px 16px calc(16px + var(--safe-bottom));
-  padding-top: calc(12px + var(--safe-top));
+  padding: calc(12px + var(--safe-top)) 16px calc(16px + var(--safe-bot));
   max-width: 480px;
   width: 100%;
   margin: 0 auto;
 }
 
-/* ---- FME Watermark ---- */
 .fme-mark {
   position: fixed;
   top: calc(12px + var(--safe-top));
   right: 16px;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
   color: var(--gold);
-  letter-spacing: 0.05em;
   z-index: 100;
   pointer-events: none;
 }
 
-/* ---- Typography ---- */
-h1 {
-  font-size: 32px;
-  font-weight: 700;
-  color: var(--white);
-  margin-bottom: 4px;
-}
+/* ===================== REVIEW CARDS ===================== */
 
-h2 {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--white);
-}
-
-.subtext {
-  font-size: 14px;
-  color: var(--gray-light);
-  margin-bottom: 24px;
-}
-
-/* ---- Cards ---- */
-.card {
+.review-card {
   background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px;
   margin-bottom: 12px;
-  border: 1px solid var(--border);
-  transition: border-color 0.2s;
 }
 
-.card-header {
+.review-card-header {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
+  gap: 12px;
+}
+
+.review-vendor {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--cream);
   margin-bottom: 4px;
 }
 
-.card-vendor {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--white);
-}
-
-.card-amount {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--gold);
-}
-
-.card-amount.debit {
-  color: var(--orange);
-}
-
-.doc-type-label {
+.review-doctype {
   display: inline-block;
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  padding: 2px 6px;
+  letter-spacing: 0.10em;
+  padding: 2px 7px;
   border-radius: 4px;
-  margin-bottom: 8px;
+  background: var(--gold-bg);
   color: var(--gold);
-  background: transparent;
-}
-
-.doc-type-label.RECEIPT  { color: var(--gold); }
-.doc-type-label.INVOICE  { color: var(--orange); }
-.doc-type-label.DOCUMENT { color: var(--gray-light); }
-.doc-type-label.STATEMENT{ color: var(--gray-light); }
-
-.date-label {
-  font-size: 12px;
-  color: var(--gray-light);
-  margin-bottom: 12px;
-}
-
-.field-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 13px;
   margin-bottom: 4px;
 }
+.review-doctype[data-type="INVOICE"]   { color: var(--orange); background: rgba(212,100,26,0.10); }
+.review-doctype[data-type="STATEMENT"] { color: var(--cream-dim); background: var(--bg-card-2); }
+.review-doctype[data-type="DOCUMENT"]  { color: var(--cream-dim); background: var(--bg-card-2); }
 
-.field-label {
-  color: var(--gray);
-  flex: 0 0 140px;
+.review-total {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--gold);
 }
 
-.field-value {
-  color: var(--white);
-  text-align: right;
-  flex: 1;
+.review-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  color: var(--cream-dim);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  margin-top: 4px;
 }
 
-.field-value.gold   { color: var(--gold); }
-.field-value.orange { color: var(--orange); }
+/* ===================== FORM INPUTS ===================== */
 
-/* ---- Review form (Stage 6) ---- */
 .review-label {
   display: block;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.06em;
-  color: var(--gray);
+  color: var(--cream-dim);
   text-transform: uppercase;
-  margin-top: 12px;
+  margin-top: 10px;
   margin-bottom: 4px;
 }
 
@@ -201,7 +349,7 @@ h2 {
   background: #111111;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  color: var(--white);
+  color: var(--cream);
   font-size: 15px;
   font-family: var(--font);
   padding: 10px 12px;
@@ -210,71 +358,26 @@ h2 {
   appearance: none;
   transition: border-color 0.15s;
 }
+.review-input:focus        { border-color: var(--gold); }
+.review-input::placeholder { color: var(--gray); }
 
-.review-input:focus {
-  border-color: var(--gold);
-}
-
-.review-input::placeholder {
-  color: var(--gray);
-}
-
-/* number inputs — remove spinners */
 .review-input[type="number"]::-webkit-inner-spin-button,
-.review-input[type="number"]::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
+.review-input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .review-input[type="number"] { -moz-appearance: textfield; }
 
-/* select arrow */
+.review-input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+
 select.review-input {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23666' d='M6 8L0 0h12z'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23888' d='M6 8L0 0h12z'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 12px center;
   padding-right: 32px;
   cursor: pointer;
 }
+select.review-input option { background: #1c1c1c; color: var(--cream); }
 
-select.review-input option {
-  background: #1a1a1a;
-  color: var(--white);
-}
+/* ===================== BUTTONS ===================== */
 
-/* date input calendar icon colour */
-.review-input[type="date"]::-webkit-calendar-picker-indicator {
-  filter: invert(0.6);
-  cursor: pointer;
-}
-
-/* ---- Status badges ---- */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  padding: 3px 8px;
-  border-radius: 4px;
-  text-transform: uppercase;
-}
-
-.badge.NEEDS_REVIEW, .badge.NEEDS-REVIEW {
-  background: var(--needs-review-bg);
-  color: var(--needs-review-text);
-}
-
-.badge.DRAFT {
-  background: var(--draft-bg);
-  color: var(--draft-text);
-}
-
-.badge.APPROVED {
-  background: #0a2a0a;
-  color: var(--green);
-}
-
-/* ---- Primary Button ---- */
 .btn-primary {
   display: block;
   width: 100%;
@@ -290,29 +393,29 @@ select.review-input option {
   margin-top: 24px;
   transition: background 0.15s;
   -webkit-tap-highlight-color: transparent;
+  font-family: var(--font);
 }
+.btn-primary:active   { background: var(--gold-dim); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.btn-primary:active  { background: var(--gold-dim); }
-.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-
-/* ---- Secondary Button ---- */
 .btn-secondary {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 14px;
+  padding: 8px 16px;
   background: transparent;
-  color: var(--white);
+  color: var(--cream);
   font-size: 13px;
   font-weight: 500;
   border: 1px solid var(--border);
   border-radius: 20px;
   cursor: pointer;
+  font-family: var(--font);
   -webkit-tap-highlight-color: transparent;
 }
 
 .btn-approve {
-  padding: 6px 16px;
+  padding: 8px 18px;
   background: transparent;
   color: var(--green);
   font-size: 13px;
@@ -321,40 +424,79 @@ select.review-input option {
   border-radius: 20px;
   cursor: pointer;
   margin-top: 10px;
+  font-family: var(--font);
 }
 
-/* ---- Tab Bar ---- */
+/* ===================== GENERIC CARD ===================== */
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.card-header   { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 4px; }
+.card-vendor   { font-size: 18px; font-weight: 700; color: var(--cream); }
+.card-amount   { font-size: 18px; font-weight: 700; color: var(--gold); }
+.doc-type-label { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.10em; padding: 2px 6px; border-radius: 4px; margin-bottom: 8px; color: var(--gold); }
+.doc-type-label.RECEIPT   { color: var(--gold); }
+.doc-type-label.INVOICE   { color: var(--orange); }
+.doc-type-label.DOCUMENT  { color: var(--cream-dim); }
+.doc-type-label.STATEMENT { color: var(--cream-dim); }
+.date-label { font-size: 12px; color: var(--cream-dim); margin-bottom: 12px; }
+
+/* ===================== STATUS BADGES ===================== */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+.badge.NEEDS_REVIEW { background: var(--needs-review-bg); color: var(--needs-review-text); }
+.badge.DRAFT        { background: var(--draft-bg);        color: var(--draft-text); }
+.badge.APPROVED     { background: rgba(76,175,120,0.12);  color: var(--green); }
+
+/* ===================== TAB BAR ===================== */
+
 .tab-bar {
   display: flex;
   gap: 8px;
   overflow-x: auto;
   scrollbar-width: none;
-  margin-bottom: 20px;
+  -ms-overflow-style: none;
   padding-bottom: 4px;
+  margin-bottom: 16px;
+  /* prevent horizontal page overflow */
+  max-width: 100%;
+  flex-shrink: 0;
 }
-
 .tab-bar::-webkit-scrollbar { display: none; }
 
 .tab {
   flex-shrink: 0;
-  padding: 7px 16px;
+  padding: 7px 14px;
   border-radius: 20px;
   border: 1px solid var(--border);
   background: transparent;
-  color: var(--white-dim);
+  color: var(--cream-dim);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
+  font-family: var(--font);
   -webkit-tap-highlight-color: transparent;
 }
+.tab.active { border-color: var(--gold); color: var(--gold); }
 
-.tab.active {
-  border-color: var(--gold);
-  color: var(--gold);
-}
+/* ===================== VIEW TOGGLE ===================== */
 
-/* ---- View Toggle ---- */
 .view-toggle {
   display: flex;
   background: var(--bg-card);
@@ -362,35 +504,21 @@ select.review-input option {
   padding: 3px;
   margin-bottom: 16px;
 }
-
 .view-toggle button {
   flex: 1;
   padding: 8px;
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--gray-light);
+  color: var(--cream-dim);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
+  font-family: var(--font);
 }
+.view-toggle button.active { background: var(--bg-card-2); color: var(--cream); }
 
-.view-toggle button.active {
-  background: var(--bg-card-hover);
-  color: var(--white);
-}
-
-/* ---- Ledger row ---- */
-.ledger-header {
-  display: grid;
-  grid-template-columns: 1fr 2fr 1fr;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  color: var(--gray);
-  padding: 0 4px 8px;
-  text-transform: uppercase;
-}
+/* ===================== LEDGER ===================== */
 
 .ledger-row {
   display: grid;
@@ -399,66 +527,38 @@ select.review-input option {
   align-items: start;
   padding: 12px 0;
   border-bottom: 1px solid var(--border);
+  /* no overflow */
+  min-width: 0;
 }
 
-.ledger-date   { font-size: 13px; color: var(--white); font-weight: 500; }
-.ledger-type   { font-size: 9px; letter-spacing: 0.08em; font-weight: 700; color: var(--gray); margin-top: 2px; }
-.ledger-entity { font-size: 14px; font-weight: 600; color: var(--white); }
-.ledger-amount { font-size: 14px; font-weight: 700; text-align: right; }
+.ledger-date   { font-size: 13px; color: var(--cream); font-weight: 500; white-space: nowrap; }
+.ledger-type   { font-size: 9px; letter-spacing: 0.08em; font-weight: 700; color: var(--cream-dim); margin-top: 2px; }
+.ledger-entity { font-size: 14px; font-weight: 600; color: var(--cream); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-amount { font-size: 14px; font-weight: 700; text-align: right; white-space: nowrap; }
 .ledger-amount.DEBIT   { color: var(--orange); }
 .ledger-amount.CREDIT  { color: var(--green); }
-.ledger-amount.BALANCE { color: var(--white); }
+.ledger-amount.BALANCE { color: var(--cream); }
 
-.ledger-amount-label {
-  font-size: 10px;
-  color: var(--gray);
-  text-align: right;
-  margin-top: 2px;
-}
+/* ===================== JOURNAL ===================== */
 
-/* ---- Journal entry card ---- */
 .journal-card {
   background: var(--bg-card);
   border-radius: var(--radius);
   padding: 14px;
   margin-bottom: 12px;
+  border: 1px solid var(--border);
+  /* prevent horizontal overflow */
+  overflow: hidden;
 }
-
-.journal-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 10px;
-}
-
-.journal-meta   { font-size: 12px; color: var(--gray-light); margin-bottom: 6px; }
-.journal-vendor { font-size: 16px; font-weight: 700; color: var(--white); }
-
-.journal-table { width: 100%; font-size: 13px; margin-bottom: 8px; }
-.journal-table th {
-  color: var(--gray);
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  padding-bottom: 6px;
-  text-align: left;
-  font-weight: 600;
-}
-.journal-table th:last-child,
-.journal-table td:last-child { text-align: right; }
-.journal-table td { padding: 4px 0; }
+.journal-table     { width: 100%; font-size: 13px; margin-bottom: 8px; table-layout: fixed; }
+.journal-table th  { color: var(--cream-dim); font-size: 10px; letter-spacing: 0.08em; padding-bottom: 6px; text-align: left; font-weight: 600; }
+.journal-table th:last-child, .journal-table td:last-child { text-align: right; }
+.journal-table td  { padding: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .journal-table td:nth-child(2) { color: var(--orange); font-weight: 600; }
 .journal-table td:nth-child(3) { color: var(--green);  font-weight: 600; }
 
-.journal-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--green);
-}
+/* ===================== SCAN QUEUE ===================== */
 
-/* ---- Scan queue ---- */
 .scan-doc-row {
   display: flex;
   align-items: center;
@@ -467,6 +567,7 @@ select.review-input option {
   border-radius: var(--radius);
   padding: 14px;
   margin-bottom: 10px;
+  min-width: 0;
 }
 
 .scan-thumb {
@@ -478,12 +579,18 @@ select.review-input option {
   flex-shrink: 0;
 }
 
-.scan-doc-name           { flex: 1; font-size: 15px; font-weight: 500; }
-.scan-status-done        { color: var(--green); font-size: 14px; font-weight: 600; }
-.scan-status-processing  { color: var(--gold);  font-size: 14px; }
-.scan-status-failed      { color: var(--red);   font-size: 14px; }
+.scan-doc-name {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--cream);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
-/* ---- Camera ---- */
+/* ===================== CAMERA ===================== */
+
 .camera-container {
   position: fixed;
   inset: 0;
@@ -492,34 +599,25 @@ select.review-input option {
   display: flex;
   flex-direction: column;
 }
-
-.camera-video {
-  flex: 1;
-  width: 100%;
-  object-fit: cover;
-}
-
+.camera-video    { flex: 1; width: 100%; object-fit: cover; }
 .camera-controls {
   padding: 24px;
-  padding-bottom: calc(24px + var(--safe-bottom));
+  padding-bottom: calc(24px + var(--safe-bot));
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 40px;
 }
-
 .camera-shutter {
   width: 72px;
   height: 72px;
   border-radius: 50%;
-  border: 4px solid var(--white);
-  background: var(--white);
+  border: 4px solid var(--cream);
+  background: var(--cream);
   cursor: pointer;
   transition: transform 0.1s;
 }
-
 .camera-shutter:active { transform: scale(0.92); }
-
 .camera-counter {
   position: absolute;
   top: calc(16px + var(--safe-top));
@@ -531,7 +629,6 @@ select.review-input option {
   padding: 4px 12px;
   border-radius: 20px;
 }
-
 .camera-done-btn {
   position: absolute;
   top: calc(16px + var(--safe-top));
@@ -546,28 +643,30 @@ select.review-input option {
   cursor: pointer;
 }
 
-/* ---- Spinner ---- */
+/* ===================== SPINNER ===================== */
+
 .spinner {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border: 3px solid var(--border);
   border-top-color: var(--gold);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   margin: 40px auto;
 }
-
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---- Empty state ---- */
+/* ===================== EMPTY STATE ===================== */
+
 .empty-state {
   text-align: center;
   padding: 48px 24px;
-  color: var(--gray);
+  color: var(--cream-dim);
   font-size: 14px;
 }
 
-/* ---- Balanced badge ---- */
+/* ===================== BALANCED BADGE ===================== */
+
 .balanced-badge {
   display: inline-flex;
   align-items: center;
