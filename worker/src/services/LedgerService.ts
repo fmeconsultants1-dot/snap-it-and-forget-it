@@ -1,20 +1,18 @@
 /**
  * LedgerService.ts - FME Mission 001 - Snap It & Forget It
  *
- * BUG A FIX (2026-09-04):
- * updateAndApprove() and approveLedgerEntry() both now run
- * validateApprovalReadiness() before any DB mutation.
+ * BUG B FIX (2026-09-04):
+ * createFromExtraction() previously used:
+ *   const date = extraction.date ?? new Date().toISOString().slice(0,10);
+ * This silently turned a null/rejected date into today's date in the ledger.
  *
- * Rules for RECEIPT and INVOICE:
- *   - vendor/issuer must be non-empty
- *   - date must be present and match YYYY-MM-DD
- *   - total must be a finite number
- *   - total === 0 requires corrections.confirm_zero_total === true
- *
- * STATEMENT and DOCUMENT: no validation (balances can be zero, issuer optional).
- *
- * On failure: returns 422, ledger stays NEEDS_REVIEW, journal stays DRAFT.
- * Today's date is NEVER substituted silently for a missing invoice/receipt date.
+ * Fix:
+ *   - null extraction.date → ledger_entries.date = null
+ *   - review_note gains 'DATE_REQUIRED' flag when date is null for RECEIPT/INVOICE/STATEMENT
+ *   - journal_entries.entry_date uses a provisional date internally (today) because
+ *     the column is NOT NULL, but this is clearly marked DRAFT and replaced on approval.
+ *   - validateApprovalReadiness() now requires date for STATEMENT in addition to
+ *     RECEIPT and INVOICE. DOCUMENT remains date-optional.
  */
 
 import { toCents, toDollars, splitProportional } from '../lib/money';
@@ -89,13 +87,19 @@ export interface ReviewCorrections {
   payment_method?: string | null;
   description?: string | null;
   doc_type?: string | null;
-  /** Bug A: must be true when total===0 and doc_type is RECEIPT or INVOICE */
   confirm_zero_total?: boolean;
 }
 
-/** Bug A: centralized approval-readiness validator.
- *  Called by BOTH updateAndApprove() and approveLedgerEntry().
- *  Returns null if ready, or an error message string if not.
+/**
+ * Centralized approval-readiness validator.
+ * Called by updateAndApprove() and approveLedgerEntry().
+ * Returns null if ready, or an error string if not.
+ *
+ * Date requirement by doc type:
+ *   RECEIPT   = required
+ *   INVOICE   = required
+ *   STATEMENT = required  (Bug B: added)
+ *   DOCUMENT  = optional
  */
 function validateApprovalReadiness(
   docType: string,
@@ -104,19 +108,19 @@ function validateApprovalReadiness(
   total: number | null,
   confirmZero: boolean
 ): string | null {
-  const needsValidation = docType === 'RECEIPT' || docType === 'INVOICE';
-  if (!needsValidation) return null;
+  const requiresDate   = docType === 'RECEIPT' || docType === 'INVOICE' || docType === 'STATEMENT';
+  const requiresVendor = docType === 'RECEIPT' || docType === 'INVOICE';
 
-  if (!vendor || vendor.trim() === '') {
+  if (requiresVendor && (!vendor || vendor.trim() === '')) {
     return 'Vendor / Issuer is required for receipts and invoices.';
   }
-  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return 'A valid date (YYYY-MM-DD) is required for receipts and invoices.';
+  if (requiresDate && (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date))) {
+    return 'A valid date (YYYY-MM-DD) is required for receipts, invoices, and statements.';
   }
-  if (total === null || !isFinite(total)) {
+  if ((docType === 'RECEIPT' || docType === 'INVOICE') && (total === null || !isFinite(total))) {
     return 'A valid total amount is required for receipts and invoices.';
   }
-  if (total === 0 && !confirmZero) {
+  if ((docType === 'RECEIPT' || docType === 'INVOICE') && total === 0 && !confirmZero) {
     return 'Total is $0.00. Check "Confirm $0.00 is correct" to approve a zero-dollar receipt or invoice.';
   }
   return null;
@@ -176,52 +180,50 @@ function buildJournalLines(
 
   if (!isExpense || (extraction.total ?? 0) <= 0) return { lines: [], itcFlags: [] };
 
-  const totalCents = toCents(extraction.total!);
-  const gstCents = toCents(extraction.tax_gst ?? 0);
-  const hstCents = toCents(extraction.tax_hst ?? 0);
-  const pstCents = toCents(extraction.tax_pst ?? 0);
+  const totalCents       = toCents(extraction.total!);
+  const gstCents         = toCents(extraction.tax_gst ?? 0);
+  const hstCents         = toCents(extraction.tax_hst ?? 0);
+  const pstCents         = toCents(extraction.tax_pst ?? 0);
   const recoverableCents = gstCents + hstCents;
-  const subtotalCents = totalCents - gstCents - hstCents - pstCents;
+  const subtotalCents    = totalCents - gstCents - hstCents - pstCents;
 
-  const exp = expenseAccount(extraction.category);
+  const exp    = expenseAccount(extraction.category);
   const settle = settlementAccount(extraction, config, isInvoice);
 
   const itcDet = itcConfig
     ? determineITC({
         doc_type: extraction.doc_type,
-        tax_gst: toDollars(gstCents),
-        tax_hst: toDollars(hstCents),
-        tax_pst: toDollars(pstCents),
+        tax_gst: toDollars(gstCents), tax_hst: toDollars(hstCents), tax_pst: toDollars(pstCents),
         confidence_total: extraction.confidence_total,
-        date: extraction.date,
-        category: extraction.category,
+        date: extraction.date, category: extraction.category,
       }, itcConfig)
-    : { eligible: false, flags: [] as string[], recoverable_gst: 0, recoverable_hst: 0, non_recoverable_pst: toDollars(pstCents), review_required: false };
+    : { eligible: false, flags: [] as string[], recoverable_gst: 0, recoverable_hst: 0,
+        non_recoverable_pst: toDollars(pstCents), review_required: false };
 
-  if (!itcDet.eligible && recoverableCents > 0) {
-    itcFlags.push(...(itcDet.flags as string[]));
-  }
+  if (!itcDet.eligible && recoverableCents > 0) itcFlags.push(...(itcDet.flags as string[]));
 
   const expDebitCents = itcDet.eligible ? subtotalCents + pstCents : totalCents;
-  lines.push({ code: exp.code, name: exp.name, debitCents: expDebitCents, creditCents: 0, memo: `${extraction.doc_type}: ${extraction.vendor ?? extraction.issuer ?? 'Unknown'}` });
+  lines.push({ code: exp.code, name: exp.name, debitCents: expDebitCents, creditCents: 0,
+    memo: `${extraction.doc_type}: ${extraction.vendor ?? extraction.issuer ?? 'Unknown'}` });
 
   if (itcDet.eligible && recoverableCents > 0) {
-    lines.push({ code: ACCOUNTS.gstRecov.code, name: ACCOUNTS.gstRecov.name, debitCents: recoverableCents, creditCents: 0, memo: 'ITC' });
+    lines.push({ code: ACCOUNTS.gstRecov.code, name: ACCOUNTS.gstRecov.name,
+      debitCents: recoverableCents, creditCents: 0, memo: 'ITC' });
     itcFlags.push('ITC_ELIGIBLE');
   }
 
-  lines.push({ code: settle.code, name: settle.name, debitCents: 0, creditCents: totalCents, memo: `Payment: ${extraction.payment_method ?? 'Cash'}` });
+  lines.push({ code: settle.code, name: settle.name, debitCents: 0, creditCents: totalCents,
+    memo: `Payment: ${extraction.payment_method ?? 'Cash'}` });
 
   const sumDR = lines.reduce((s, l) => s + l.debitCents, 0);
   const sumCR = lines.reduce((s, l) => s + l.creditCents, 0);
-  if (Math.abs(sumDR - sumCR) > 1) {
+  if (Math.abs(sumDR - sumCR) > 1)
     throw new Error(`Journal balance violation: DR ${toDollars(sumDR)} != CR ${toDollars(sumCR)}`);
-  }
 
   return { lines, itcFlags };
 }
 
-function generateId() { return crypto.randomUUID(); }
+function generateId()  { return crypto.randomUUID(); }
 function generateRef() { return Math.random().toString(16).slice(2, 8).toUpperCase(); }
 
 export class LedgerService {
@@ -241,20 +243,35 @@ export class LedgerService {
     documentId: string,
     runId: string
   ): Promise<{ ledgerEntryId: string; journalEntryId: string; refNumber: string; lineCount: number; itcFlags: string[]; isBalanced: boolean }> {
-    const amount = extraction.total ?? 0;
+    const amount    = extraction.total ?? 0;
     const refNumber = generateRef();
-    const leId = generateId();
-    const jeId = generateId();
-    const date = extraction.date ?? new Date().toISOString().slice(0, 10);
-    const entity = extraction.vendor ?? extraction.issuer ?? 'Unknown';
+    const leId      = generateId();
+    const jeId      = generateId();
+    const entity    = extraction.vendor ?? extraction.issuer ?? 'Unknown';
     const isExpense = extraction.doc_type === 'RECEIPT' || extraction.doc_type === 'INVOICE';
     const balanceType = isExpense ? 'DEBIT' : 'BALANCE';
+
+    // BUG B FIX: null date stays null in ledger_entries.
+    // Do NOT substitute today's date — that would hide a missing/invalid date.
+    const ledgerDate: string | null = extraction.date ?? null;
+
+    // journal_entries.entry_date is NOT NULL (schema constraint).
+    // Use a provisional today-date for the DRAFT journal only.
+    // This date is replaced with the real document date when the user approves.
+    const journalDate: string = ledgerDate ?? new Date().toISOString().slice(0, 10);
 
     const { lines, itcFlags } = buildJournalLines(extraction, this.config, this.itcConfig);
     const sumDRCents = lines.reduce((s, l) => s + l.debitCents, 0);
     const sumCRCents = lines.reduce((s, l) => s + l.creditCents, 0);
     const isBalanced = lines.length === 0 || Math.abs(sumDRCents - sumCRCents) <= 1;
-    const reviewNote = itcFlags.filter(f => f !== 'ITC_ELIGIBLE').join(', ') || null;
+
+    // Build review_note: include DATE_REQUIRED when date is null for doc types that need it
+    const requiresDate = extraction.doc_type === 'RECEIPT' ||
+                         extraction.doc_type === 'INVOICE' ||
+                         extraction.doc_type === 'STATEMENT';
+    const noteFlags: string[] = itcFlags.filter(f => f !== 'ITC_ELIGIBLE');
+    if (requiresDate && !ledgerDate) noteFlags.push('DATE_REQUIRED');
+    const reviewNote = noteFlags.length > 0 ? noteFlags.join(', ') : null;
 
     const stmts: D1PreparedStatement[] = [];
 
@@ -264,7 +281,8 @@ export class LedgerService {
          amount,debit_amount,credit_amount,balance_type,status,review_note,ref_number,created_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
     `).bind(leId, runId, documentId, extractionId,
-      extraction.doc_type, entity, date,
+      extraction.doc_type, entity,
+      ledgerDate,                          // null when extraction date was null/invalid
       amount, isExpense ? amount : 0, isExpense ? amount : 0,
       balanceType, 'NEEDS_REVIEW', reviewNote, refNumber));
 
@@ -272,7 +290,9 @@ export class LedgerService {
       INSERT INTO journal_entries
         (id,ledger_entry_id,entry_date,description,doc_type,status,is_balanced,total_debits,total_credits,ref_number,created_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,datetime('now'))
-    `).bind(jeId, leId, date, extraction.description ?? entity,
+    `).bind(jeId, leId,
+      journalDate,                         // provisional date for NOT NULL constraint
+      extraction.description ?? entity,
       extraction.doc_type, 'DRAFT', isBalanced ? 1 : 0,
       toDollars(sumDRCents), toDollars(sumCRCents), refNumber));
 
@@ -281,23 +301,22 @@ export class LedgerService {
       stmts.push(this.db.prepare(`
         INSERT INTO journal_lines(id,journal_entry_id,account_code,account_name,debit,credit,memo,line_order)
         VALUES(?,?,?,?,?,?,?,?)
-      `).bind(generateId(), jeId, l.code, l.name, toDollars(l.debitCents), toDollars(l.creditCents), l.memo, i + 1));
+      `).bind(generateId(), jeId, l.code, l.name,
+        toDollars(l.debitCents), toDollars(l.creditCents), l.memo, i + 1));
     }
 
     stmts.push(this.db.prepare(`
       INSERT INTO audit_log(entity_type,entity_id,action,after_state,performed_at)
       VALUES('ledger_entries',?,?,?,datetime('now'))
-    `).bind(leId, 'CREATE', JSON.stringify({ status: 'NEEDS_REVIEW', amount, line_count: lines.length, itc_flags: itcFlags })));
+    `).bind(leId, 'CREATE', JSON.stringify({
+      status: 'NEEDS_REVIEW', amount, line_count: lines.length,
+      itc_flags: itcFlags, date_required: requiresDate && !ledgerDate,
+    })));
 
     await this.db.batch(stmts);
     return { ledgerEntryId: leId, journalEntryId: jeId, refNumber, lineCount: lines.length, itcFlags, isBalanced };
   }
 
-  /**
-   * updateAndApprove — Stage 6 + Bug A.
-   * Validates before any DB mutation. Rejects if RECEIPT/INVOICE is incomplete.
-   * Never substitutes today's date for a missing receipt/invoice date.
-   */
   async updateAndApprove(
     ledgerEntryId: string,
     corrections: ReviewCorrections,
@@ -305,47 +324,38 @@ export class LedgerService {
   ): Promise<{ isBalanced: boolean; itcFlags: string[] }> {
     const existing = await this.db
       .prepare('SELECT * FROM ledger_entries WHERE id=?')
-      .bind(ledgerEntryId)
-      .first() as any;
+      .bind(ledgerEntryId).first() as any;
     if (!existing) throw new Error(`Ledger entry not found: ${ledgerEntryId}`);
 
     const jeRow = await this.db
       .prepare('SELECT id FROM journal_entries WHERE ledger_entry_id=? LIMIT 1')
-      .bind(ledgerEntryId)
-      .first() as any;
+      .bind(ledgerEntryId).first() as any;
     if (!jeRow) throw new Error(`Journal entry not found for ledger entry: ${ledgerEntryId}`);
     const jeId: string = jeRow.id;
 
-    const docType = (corrections.doc_type ?? existing.entry_type ?? 'RECEIPT') as ExtractionResult['doc_type'];
-    const vendor  = corrections.vendor  !== undefined ? corrections.vendor  : (existing.entity ?? null);
-    const date    = corrections.date    !== undefined ? corrections.date    : (existing.date   ?? null);
-    const total   = corrections.total   !== undefined ? (corrections.total ?? 0) : (existing.amount ?? 0);
-    const confirmZero = corrections.confirm_zero_total === true;
+    const docType       = (corrections.doc_type ?? existing.entry_type ?? 'RECEIPT') as ExtractionResult['doc_type'];
+    const vendor        = corrections.vendor         !== undefined ? corrections.vendor        : (existing.entity ?? null);
+    const date          = corrections.date           !== undefined ? corrections.date          : (existing.date   ?? null);
+    const total         = corrections.total          !== undefined ? (corrections.total ?? 0)  : (existing.amount ?? 0);
+    const confirmZero   = corrections.confirm_zero_total === true;
 
-    // Bug A: validate before any mutation
     const validationError = validateApprovalReadiness(docType, vendor, date, total, confirmZero);
-    if (validationError) {
-      throw new Error(validationError);
-    }
+    if (validationError) throw new Error(validationError);
 
     const category      = corrections.category       !== undefined ? corrections.category       : null;
     const paymentMethod = corrections.payment_method !== undefined ? corrections.payment_method : null;
     const description   = corrections.description   !== undefined ? corrections.description   : null;
 
-    const rawTax  = corrections.tax ?? null;
-    const taxGst  = corrections.tax_gst !== undefined ? (corrections.tax_gst ?? 0) : (rawTax != null ? rawTax : 0);
-    const taxHst  = corrections.tax_hst !== undefined ? (corrections.tax_hst ?? 0) : 0;
-    const taxPst  = corrections.tax_pst !== undefined ? (corrections.tax_pst ?? 0) : 0;
+    const rawTax   = corrections.tax ?? null;
+    const taxGst   = corrections.tax_gst !== undefined ? (corrections.tax_gst ?? 0) : (rawTax != null ? rawTax : 0);
+    const taxHst   = corrections.tax_hst !== undefined ? (corrections.tax_hst ?? 0) : 0;
+    const taxPst   = corrections.tax_pst !== undefined ? (corrections.tax_pst ?? 0) : 0;
     const subtotal = corrections.subtotal !== undefined ? (corrections.subtotal ?? 0)
                    : Math.max(0, total - taxGst - taxHst - taxPst);
-
     const taxValue: number | null = (rawTax ?? (taxGst + taxHst + taxPst)) || null;
 
-    // For RECEIPT/INVOICE we validated date is non-null above.
-    // For STATEMENT/DOCUMENT we allow today as fallback.
-    const isReceiptOrInvoice = docType === 'RECEIPT' || docType === 'INVOICE';
-    const safeDate = date ?? (isReceiptOrInvoice ? null : new Date().toISOString().slice(0, 10));
-    // safeDate cannot be null here for receipt/invoice — validation already caught that.
+    // date is guaranteed non-null for RECEIPT/INVOICE/STATEMENT by validator above
+    const safeDate = date!;
 
     const syntheticExtraction: ExtractionResult = {
       doc_type: docType, vendor, date: safeDate, total, subtotal,
@@ -362,8 +372,8 @@ export class LedgerService {
     const sumCRCents = lines.reduce((s, l) => s + l.creditCents, 0);
     const isBalanced = lines.length === 0 || Math.abs(sumDRCents - sumCRCents) <= 1;
     const reviewNote = itcFlags.filter(f => f !== 'ITC_ELIGIBLE').join(', ') || null;
-    const entity = vendor ?? 'Unknown';
-    const isExpense = docType === 'RECEIPT' || docType === 'INVOICE';
+    const entity     = vendor ?? 'Unknown';
+    const isExpense  = docType === 'RECEIPT' || docType === 'INVOICE';
 
     const stmts: D1PreparedStatement[] = [];
 
@@ -373,7 +383,8 @@ export class LedgerService {
           entry_type=?, review_note=?, status='APPROVED',
           approved_at=datetime('now'), approved_by=?
       WHERE id=?
-    `).bind(entity, safeDate, total, isExpense ? total : 0, isExpense ? total : 0,
+    `).bind(entity, safeDate, total,
+      isExpense ? total : 0, isExpense ? total : 0,
       docType, reviewNote, approvedBy, ledgerEntryId));
 
     stmts.push(this.db.prepare(`
@@ -394,7 +405,8 @@ export class LedgerService {
       stmts.push(this.db.prepare(`
         INSERT INTO journal_lines(id,journal_entry_id,account_code,account_name,debit,credit,memo,line_order)
         VALUES(?,?,?,?,?,?,?,?)
-      `).bind(generateId(), jeId, l.code, l.name, toDollars(l.debitCents), toDollars(l.creditCents), l.memo, i + 1));
+      `).bind(generateId(), jeId, l.code, l.name,
+        toDollars(l.debitCents), toDollars(l.creditCents), l.memo, i + 1));
     }
 
     stmts.push(this.db.prepare(`
@@ -408,30 +420,17 @@ export class LedgerService {
     return { isBalanced, itcFlags };
   }
 
-  /**
-   * approveLedgerEntry — direct approve (POST /api/ledger/:id/approve).
-   * Bug A: same validation as updateAndApprove. Cannot bypass via direct route.
-   * For the direct route, confirm_zero_total is never available (not sent by caller),
-   * so any zero-dollar RECEIPT/INVOICE will be blocked until the user goes through
-   * the Review screen and explicitly confirms.
-   */
   async approveLedgerEntry(id: string, approvedBy = 'user'): Promise<void> {
     const existing = await this.db
       .prepare('SELECT * FROM ledger_entries WHERE id=?')
-      .bind(id)
-      .first() as any;
+      .bind(id).first() as any;
     if (!existing) throw new Error(`Ledger entry not found: ${id}`);
 
     const validationError = validateApprovalReadiness(
-      existing.entry_type,
-      existing.entity,
-      existing.date,
-      existing.amount,
+      existing.entry_type, existing.entity, existing.date, existing.amount,
       false // direct-approve never has zero confirmation
     );
-    if (validationError) {
-      throw new Error(validationError);
-    }
+    if (validationError) throw new Error(validationError);
 
     await this.db.batch([
       this.db.prepare("UPDATE ledger_entries SET status='APPROVED',approved_at=datetime('now'),approved_by=? WHERE id=?").bind(approvedBy, id),
@@ -450,7 +449,7 @@ export class LedgerService {
     q += ' ORDER BY created_at DESC';
     q += ` LIMIT ${filter.limit ?? 100} OFFSET ${filter.offset ?? 0}`;
     const r = await this.db.prepare(q).bind(...p).all();
-    return (r.results as unknown as LedgerEntryRow[]);
+    return r.results as unknown as LedgerEntryRow[];
   }
 
   async getJournalEntries(filter: { runId?: string; dateFilter?: string; entryType?: string; status?: string }): Promise<JournalEntryRow[]> {
@@ -465,8 +464,8 @@ export class LedgerService {
     const r = await this.db.prepare(q).bind(...p).all();
     const entries = r.results as unknown as JournalEntryRow[];
     for (const e of entries) {
-      const linesResult = await this.db.prepare('SELECT * FROM journal_lines WHERE journal_entry_id=? ORDER BY line_order').bind(e.id).all();
-      e.lines = linesResult.results as unknown as JournalLineRow[];
+      const lr = await this.db.prepare('SELECT * FROM journal_lines WHERE journal_entry_id=? ORDER BY line_order').bind(e.id).all();
+      e.lines = lr.results as unknown as JournalLineRow[];
     }
     return entries;
   }
