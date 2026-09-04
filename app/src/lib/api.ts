@@ -1,12 +1,14 @@
 /**
  * api.ts - Snap It & Forget It API client - FME Mission 001
  *
- * ROOT CAUSE FIX (2026-09-03):
- * Backend POST /api/scan/document returns:
- *   { results: ScanResult[], detectedCount: number }
- * Previous code typed the return as ScanResult directly, so
- * ProcessingPage read result.extraction = undefined on every call.
- * Fix: unwrap results[0] here so callers receive ScanResult directly.
+ * DIAGNOSTIC FIX (2026-09-04):
+ * When backend returns 422 { results:[{status:'FAILED',error:'...'}, detectedCount:N }
+ * the previous request() read o.error which is undefined at the top level.
+ * This caused the thrown error to be the literal string "HTTP 422" with no
+ * useful information surfaced to the user.
+ *
+ * Fix: check o.error || o.results?.[0]?.error || fallback to HTTP status.
+ * This is a diagnostic change only — no backend, Gemini, camera, or logic changes.
  */
 const API_URL = import.meta.env.VITE_API_URL ?? '';
 
@@ -16,8 +18,16 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
   });
   if (!res.ok) {
-    const e = await res.json().catch(() => ({ error: 'Unknown error' })) as any;
-    throw new Error(e.error ?? `HTTP ${res.status}`);
+    const body = await res.json().catch(() => ({ error: 'Unknown error' })) as any;
+    // Surface the most specific error available:
+    // 1. Top-level error field (most endpoints)
+    // 2. results[0].error (422 scan failures — error is inside the results array)
+    // 3. Fallback to HTTP status
+    const message: string =
+      body?.error ||
+      body?.results?.[0]?.error ||
+      `HTTP ${res.status}`;
+    throw new Error(message);
   }
   return res.json();
 }
@@ -56,7 +66,6 @@ export interface ScanResult {
   extraction: ExtractionData;
 }
 
-// Raw shape the backend actually returns for processDocument
 interface ProcessDocumentResponse {
   results: ScanResult[];
   detectedCount: number;
@@ -126,14 +135,6 @@ export const scanApi = {
       body: JSON.stringify({ documentCount }),
     }),
 
-  /**
-   * processDocument — unwraps results[0] from the backend envelope.
-   * Backend returns { results: ScanResult[], detectedCount: number }.
-   * We return the first ScanResult so callers work with a single object.
-   * If the backend returns multiple detected documents in one image,
-   * all are available via results[] — callers that need all docs should
-   * use processDocumentRaw instead.
-   */
   processDocument: async (params: {
     runId: string;
     sequence: number;
@@ -145,7 +146,6 @@ export const scanApi = {
       method: 'POST',
       body: JSON.stringify(params),
     });
-    // Return the first result. If FAILED, the single FAILED entry is at results[0].
     const first = raw.results[0];
     if (!first) {
       return {
@@ -159,10 +159,6 @@ export const scanApi = {
     return first;
   },
 
-  /**
-   * processDocumentRaw — returns the full backend envelope.
-   * Use this when one image may contain multiple documents.
-   */
   processDocumentRaw: (params: {
     runId: string;
     sequence: number;
