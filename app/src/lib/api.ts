@@ -1,14 +1,5 @@
 /**
  * api.ts - Snap It & Forget It API client - FME Mission 001
- *
- * DIAGNOSTIC FIX (2026-09-04):
- * When backend returns 422 { results:[{status:'FAILED',error:'...'}, detectedCount:N }
- * the previous request() read o.error which is undefined at the top level.
- * This caused the thrown error to be the literal string "HTTP 422" with no
- * useful information surfaced to the user.
- *
- * Fix: check o.error || o.results?.[0]?.error || fallback to HTTP status.
- * This is a diagnostic change only — no backend, Gemini, camera, or logic changes.
  */
 const API_URL = import.meta.env.VITE_API_URL ?? '';
 
@@ -19,10 +10,6 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: 'Unknown error' })) as any;
-    // Surface the most specific error available:
-    // 1. Top-level error field (most endpoints)
-    // 2. results[0].error (422 scan failures — error is inside the results array)
-    // 3. Fallback to HTTP status
     const message: string =
       body?.error ||
       body?.results?.[0]?.error ||
@@ -126,6 +113,8 @@ export interface ReviewCorrections {
   payment_method?: string | null;
   description?: string | null;
   doc_type?: string | null;
+  /** Bug A: must be true when total===0 and doc_type is RECEIPT or INVOICE */
+  confirm_zero_total?: boolean;
 }
 
 export const scanApi = {
