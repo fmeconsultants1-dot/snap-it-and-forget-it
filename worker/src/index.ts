@@ -1,17 +1,11 @@
 /**
  * index.ts - FME Mission 001 - Snap It & Forget It
- * Cloudflare Worker entry point. 27 routes total.
- * index.ts: 15 | extended.ts: 12
+ * Cloudflare Worker entry point. 28 routes total.
  */
 import { ScanService, Env } from './services/ScanService';
 import { LedgerService } from './services/LedgerService';
 import { WatchdogService } from './services/WatchdogService';
 import { handleExtended } from './routes/extended';
-
-// Build-time constants injected by the deploy workflow via wrangler vars
-// Fallback values used in local dev
-declare const __GIT_SHA__: string | undefined;
-declare const __BUILD_TIME__: string | undefined;
 
 function cors(origin: string) {
   return {
@@ -69,7 +63,7 @@ export default {
       return new Response(null, { status: 204, headers: cors(origin) });
     }
 
-    // ── STATIC FILE SERVING (frontend) ──
+    // Static file serving
     if (!path.startsWith('/api/') && path !== '/health' && path !== '/health/full' && path !== '/version') {
       let filePath = path === '/' ? '/index.html' : path;
       const key = `frontend${filePath}`;
@@ -77,32 +71,19 @@ export default {
       if (obj) {
         const blob = await obj.arrayBuffer();
         const ct = getContentType(filePath);
-        // index.html: no-store so browser always revalidates and gets latest SW/app
-        // All other assets: immutable (content-addressed by hash in filename)
-        const cache = filePath.endsWith('.html')
-          ? 'no-store'
-          : 'public, max-age=31536000, immutable';
+        const cache = filePath.endsWith('.html') ? 'no-store' : 'public, max-age=31536000, immutable';
         return new Response(blob, {
           status: 200,
-          headers: {
-            'Content-Type': ct,
-            'Cache-Control': cache,
-            ...cors(origin),
-          },
+          headers: { 'Content-Type': ct, 'Cache-Control': cache, ...cors(origin) },
         });
       }
-      // SPA fallback
       if (!filePath.includes('.')) {
         const idx = await env.DOCUMENTS.get('frontend/index.html');
         if (idx) {
           const blob = await idx.arrayBuffer();
           return new Response(blob, {
             status: 200,
-            headers: {
-              'Content-Type': 'text/html; charset=utf-8',
-              'Cache-Control': 'no-store',
-              ...cors(origin),
-            },
+            headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...cors(origin) },
           });
         }
       }
@@ -110,16 +91,11 @@ export default {
 
     try {
 
-      // 0. GET /version — build identity for phone verification
+      // 0. GET /version
       if (path === '/version' && method === 'GET') {
         const gitSha = (env as any).GIT_SHA ?? 'unknown';
         const buildTime = (env as any).BUILD_TIME ?? 'unknown';
-        return json({
-          git_sha: gitSha,
-          build_time: buildTime,
-          worker: 'snap-it-forget-it-api-extract',
-          ts: new Date().toISOString(),
-        }, 200, origin);
+        return json({ git_sha: gitSha, build_time: buildTime, worker: 'snap-it-forget-it-api-extract', ts: new Date().toISOString() }, 200, origin);
       }
 
       // 1. GET /health
@@ -270,11 +246,7 @@ export default {
         ).join('\n');
         return new Response(header + rows, {
           status: 200,
-          headers: {
-            'Content-Type': 'text/csv',
-            'Content-Disposition': 'attachment; filename="snap-it-ledger.csv"',
-            ...cors(origin),
-          },
+          headers: { 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename="snap-it-ledger.csv"', ...cors(origin) },
         });
       }
 
@@ -286,7 +258,26 @@ export default {
         return json({ entries: result.results }, 200, origin);
       }
 
-      // 16-27. Extended routes
+      // 16. GET /api/diagnostic/extraction/:id  — Bug B trace tool
+      // Returns raw extraction record including raw_fields for date tracing.
+      const extractionDiagMatch = path.match(/^\/api\/diagnostic\/extraction\/([^/]+)$/);
+      if (extractionDiagMatch && method === 'GET') {
+        const row = await env.DB.prepare(
+          'SELECT id, date, raw_fields, gemini_model, created_at FROM extractions WHERE id = ?'
+        ).bind(extractionDiagMatch[1]!).first() as any;
+        if (!row) return err('Extraction not found', 404, origin);
+        let rawFields: any = {};
+        try { rawFields = JSON.parse(row.raw_fields ?? '{}'); } catch { rawFields = {}; }
+        return json({
+          extraction_id:    row.id,
+          extraction_date:  row.date,
+          raw_fields_date:  rawFields.date ?? null,
+          gemini_model:     row.gemini_model,
+          created_at:       row.created_at,
+        }, 200, origin);
+      }
+
+      // 17+. Extended routes
       const extended = await handleExtended(request, env as any, origin);
       if (extended) return extended;
 
