@@ -1,18 +1,11 @@
 /**
  * ResultsPage.tsx - FME Mission 001 - Snap It & Forget It
  *
- * Stage 6: Review/Edit before approve.
- *
- * Flow:
- *   ProcessingPage extracts docs → navigates here with results[] + runId.
- *   Each result is a NEEDS_REVIEW ledger entry. The user sees all extracted
- *   fields, can correct any of them, then taps “Approve & Save”.
- *   That fires PATCH /api/ledger/:id with the (possibly corrected) values,
- *   which rebuilds journal lines and marks the entry APPROVED atomically.
- *   Only after ALL results are approved does the user navigate to the ledger.
- *
- * The original document in R2 is never touched. document_id association
- * is preserved by the backend.
+ * Sectioned review screen. One card per detected document.
+ * Each card is independently editable and approvable.
+ * No NaN%, no fake Unknown success states.
+ * Failed extractions shown as EXTRACTION_FAILED with actionable message.
+ * Styled to match the approved black/cream/orange Snap It & Forget It identity.
  */
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -22,12 +15,9 @@ const CATEGORIES = [
   'Food', 'Transport', 'Automotive', 'Travel', 'Office',
   'Professional', 'Utilities', 'Insurance', 'Medical', 'Entertainment', 'Other',
 ];
-
 const PAYMENT_METHODS = ['Cash', 'Credit', 'Debit', 'Cheque', 'Transfer'];
+const DOC_TYPES       = ['RECEIPT', 'INVOICE', 'STATEMENT', 'DOCUMENT'];
 
-const DOC_TYPES = ['RECEIPT', 'INVOICE', 'STATEMENT', 'DOCUMENT'];
-
-// Per-result editable state seeded from extraction
 interface EditState {
   vendor: string;
   date: string;
@@ -40,366 +30,363 @@ interface EditState {
   description: string;
 }
 
-function seedEdit(ex: ScanResult['extraction']): EditState {
+function seedEdit(ex: ScanResult['extraction'] | undefined): EditState {
+  if (!ex || typeof ex !== 'object' || !ex.doc_type) {
+    return { vendor:'', date:'', doc_type:'DOCUMENT', category:'',
+             subtotal:'', tax:'', total:'', payment_method:'', description:'' };
+  }
   return {
-    vendor:         ex.vendor         ?? ex.issuer ?? '',
+    vendor:         (ex.vendor ?? ex.issuer ?? '').toString(),
     date:           ex.date           ?? '',
-    doc_type:       ex.doc_type       ?? 'RECEIPT',
+    doc_type:       ex.doc_type       ?? 'DOCUMENT',
     category:       ex.category       ?? '',
-    subtotal:       ex.subtotal       != null ? String(ex.subtotal) : '',
-    tax:            ex.tax            != null ? String(ex.tax)      : '',
-    total:          ex.total          != null ? String(ex.total)    : '',
+    subtotal:       ex.subtotal  != null && !Number.isNaN(Number(ex.subtotal)) ? String(ex.subtotal) : '',
+    tax:            ex.tax       != null && !Number.isNaN(Number(ex.tax))      ? String(ex.tax)      : '',
+    total:          ex.total     != null && !Number.isNaN(Number(ex.total))    ? String(ex.total)    : '',
     payment_method: ex.payment_method ?? '',
     description:    ex.description    ?? '',
   };
 }
 
+// Returns null if value is NaN or missing — never shows NaN%
+function safeConf(v: number | null | undefined): number | null {
+  if (v == null || typeof v !== 'number' || Number.isNaN(v)) return null;
+  return Math.round(Math.max(0, Math.min(1, v)) * 100);
+}
+
+function confColor(pct: number | null): string {
+  if (pct == null) return 'var(--cream-dim)';
+  if (pct >= 80)   return 'var(--cream)';
+  if (pct >= 60)   return 'var(--gold)';
+  return 'var(--red)';
+}
+
+function isExtractionEmpty(ex: ScanResult['extraction'] | undefined): boolean {
+  if (!ex || typeof ex !== 'object') return true;
+  return !ex.doc_type && !ex.vendor && !ex.issuer && !ex.total && !ex.date;
+}
+
 type ApproveStatus = 'idle' | 'saving' | 'done' | 'error';
 
 export default function ResultsPage() {
-  const location  = useLocation();
-  const navigate  = useNavigate();
+  const location = useLocation();
+  const navigate = useNavigate();
   const results: ScanResult[] = location.state?.results ?? [];
   const runId: string | null  = location.state?.runId   ?? null;
 
-  // Per-card edit state
-  const [edits, setEdits] = useState<EditState[]>(() => results.map(r => seedEdit(r.extraction ?? {})));
-  // Per-card approve status
+  const [edits,    setEdits]    = useState<EditState[]>(()  => results.map(r => seedEdit(r.extraction)));
   const [statuses, setStatuses] = useState<ApproveStatus[]>(() => results.map(() => 'idle'));
-  const [errors,   setErrors]   = useState<string[]>(() => results.map(() => ''));
-  // Expanded card index (one at a time on mobile)
+  const [errors,   setErrors]   = useState<string[]>(()     => results.map(() => ''));
   const [expanded, setExpanded] = useState<number>(0);
 
-  const successful = results.filter(r => r.status === 'DONE');
-  const allApproved = statuses.every((s, i) => s === 'done' || results[i]?.status === 'FAILED');
+  const approvableResults = results.filter(r => r.status === 'DONE' && r.ledgerEntryId);
+  const allApproved = approvableResults.every((r, _) => {
+    const idx = results.indexOf(r);
+    return statuses[idx] === 'done';
+  });
 
   function updateField(idx: number, field: keyof EditState, value: string) {
-    setEdits(prev => {
-      const next = [...prev];
-      next[idx] = { ...next[idx]!, [field]: value };
-      return next;
-    });
+    setEdits(prev => { const n = [...prev]; n[idx] = { ...n[idx]!, [field]: value }; return n; });
   }
 
   async function approve(idx: number) {
     const result = results[idx]!;
     if (!result.ledgerEntryId) return;
     const edit = edits[idx]!;
-
     setStatuses(prev => { const n = [...prev]; n[idx] = 'saving'; return n; });
     setErrors(prev => { const n = [...prev]; n[idx] = ''; return n; });
-
     const corrections: ReviewCorrections = {
-      vendor:         edit.vendor         || null,
-      date:           edit.date           || null,
-      doc_type:       edit.doc_type       || null,
-      category:       edit.category       || null,
-      total:          edit.total          !== '' ? parseFloat(edit.total)   : null,
-      subtotal:       edit.subtotal       !== '' ? parseFloat(edit.subtotal): null,
-      tax:            edit.tax            !== '' ? parseFloat(edit.tax)     : null,
+      vendor:         edit.vendor || null,
+      date:           edit.date   || null,
+      doc_type:       edit.doc_type || null,
+      category:       edit.category || null,
+      total:          edit.total    !== '' ? parseFloat(edit.total)    : null,
+      subtotal:       edit.subtotal !== '' ? parseFloat(edit.subtotal) : null,
+      tax:            edit.tax      !== '' ? parseFloat(edit.tax)      : null,
       payment_method: edit.payment_method || null,
       description:    edit.description    || null,
     };
-
     try {
       await ledgerApi.updateAndApprove(result.ledgerEntryId, corrections);
       setStatuses(prev => { const n = [...prev]; n[idx] = 'done'; return n; });
-      // Auto-expand next unapproved card
-      const nextIdx = results.findIndex((r, i) => i > idx && r.status === 'DONE' && statuses[i] === 'idle');
-      if (nextIdx !== -1) setExpanded(nextIdx);
+      const next = results.findIndex((r, i) => i > idx && r.status === 'DONE' && statuses[i] === 'idle');
+      if (next !== -1) setExpanded(next);
     } catch (e: any) {
       setStatuses(prev => { const n = [...prev]; n[idx] = 'error'; return n; });
       setErrors(prev => { const n = [...prev]; n[idx] = e.message ?? 'Save failed'; return n; });
     }
   }
 
-  function conf(v: number | null | undefined) {
-    if (v == null || typeof v !== 'number' || Number.isNaN(v)) return null;
-    return Math.round(v * 100);
-  }
-
-  function confColor(pct: number | null) {
-    if (pct == null) return 'var(--gray-light)';
-    if (pct >= 80) return 'var(--white)';
-    if (pct >= 60) return '#f0a500';
-    return 'var(--red)';
-  }
+  const successCount = results.filter(r => r.status === 'DONE').length;
+  const failCount    = results.filter(r => r.status === 'FAILED').length;
 
   return (
     <div className="screen">
       <div className="fme-mark">FME</div>
 
-      <div style={{ textAlign: 'center', marginBottom: 16 }}>
-        <h1 style={{ fontSize: 28, marginBottom: 4 }}>Review</h1>
-        <p style={{ color: 'var(--gray-light)', fontSize: 14 }}>
-          {successful.length} document{successful.length !== 1 ? 's' : ''} extracted.
-          {successful.length > 0 ? ' Review and approve each one.' : ''}
+      {/* Header */}
+      <div style={{ marginBottom: 24, marginTop: 8 }}>
+        <h1 style={{ fontSize: 26, color: 'var(--cream)', fontWeight: 800, marginBottom: 4 }}>Review</h1>
+        <p style={{ color: 'var(--cream-dim)', fontSize: 14 }}>
+          {successCount > 0 && `${successCount} document${successCount !== 1 ? 's' : ''} extracted — review and approve each one.`}
+          {failCount > 0 && ` ${failCount} failed.`}
         </p>
       </div>
 
-      {results.map((result, idx) => {
-        const ex        = result.extraction ?? {} as any;
-        const isFailed  = result.status === 'FAILED';
-        const status    = statuses[idx]!;
-        const isOpen    = expanded === idx;
-        const edit      = edits[idx]!;
-        const isDone    = status === 'done';
-        const isSaving  = status === 'saving';
-        const isError   = status === 'error';
-        const itcFlags  = (result as any).itcFlags ?? [];
-        const hasReview = itcFlags.some((f: string) => f.includes('INCOMPLETE') || f.includes('NOT_REGISTERED') || f.includes('LOW_CONFIDENCE'));
+      {results.length === 0 && (
+        <div className="empty-state">
+          <p>No documents to review.</p>
+          <button className="btn-primary" style={{ marginTop: 16 }} onClick={() => navigate('/')}>Back to Home</button>
+        </div>
+      )}
 
-        const vendorDisplay = isDone ? edit.vendor || 'Unknown' : (ex.vendor ?? ex.issuer ?? 'Unknown');
-        const totalDisplay  = isDone
+      {results.map((result, idx) => {
+        const ex         = result.extraction;
+        const isEmpty    = isExtractionEmpty(ex);
+        const isFailed   = result.status === 'FAILED' || isEmpty;
+        const status     = statuses[idx]!;
+        const isOpen     = expanded === idx;
+        const edit       = edits[idx]!;
+        const isDone     = status === 'done';
+        const isSaving   = status === 'saving';
+        const isError    = status === 'error';
+        const itcFlags   = result.itcFlags ?? [];
+        const hasITCNote = itcFlags.some(f => f !== 'ITC_ELIGIBLE' && f !== 'ITC_PST_NOT_RECOVERABLE');
+
+        // Card summary values — never show Unknown for amount, never NaN
+        const vendorDisplay = isDone
+          ? (edit.vendor || '—')
+          : (ex?.vendor ?? ex?.issuer ?? null);
+        const totalDisplay = isDone
           ? (edit.total !== '' ? `$${parseFloat(edit.total || '0').toFixed(2)}` : '—')
-          : (ex.total != null ? `$${Number(ex.total).toFixed(2)}` : '—');
+          : (ex?.total != null && !Number.isNaN(Number(ex?.total))
+              ? `$${Number(ex.total).toFixed(2)}` : '—');
 
         return (
           <div
             key={idx}
-            className="card"
-            style={{
-              borderColor: isDone ? 'var(--green, #22c55e)' : isError ? 'var(--red)' : 'var(--border)',
-              opacity: isFailed ? 0.5 : 1,
-            }}
+            className="review-card"
+            style={{ borderColor: isDone ? 'var(--gold)' : isError ? 'var(--red)' : 'var(--border)' }}
           >
-            {/* Card header — always visible */}
+            {/* Card header — tap to expand/collapse */}
             <div
-              className="card-header"
-              onClick={() => !isFailed && setExpanded(isOpen ? -1 : idx)}
-              style={{ cursor: isFailed ? 'default' : 'pointer' }}
+              className="review-card-header"
+              onClick={() => !isFailed && !isDone && setExpanded(isOpen ? -1 : idx)}
+              style={{ cursor: (isFailed || isDone) ? 'default' : 'pointer' }}
             >
-              <div>
-                <div className="card-vendor" style={{ color: isDone ? 'var(--green, #22c55e)' : undefined }}>
-                  {isDone ? '✓ ' : ''}{isFailed ? 'Failed' : vendorDisplay}
+              <div style={{ flex: 1 }}>
+                <div className="review-vendor">
+                  {isDone && <span style={{ color: 'var(--gold)', marginRight: 6 }}>✓</span>}
+                  {isFailed && !isDone
+                    ? <span style={{ color: 'var(--red)' }}>EXTRACTION FAILED</span>
+                    : vendorDisplay
+                      ? <span>{vendorDisplay}</span>
+                      : <span style={{ color: 'var(--cream-dim)' }}>Tap to review</span>}
                 </div>
-                <div className={`doc-type-label ${edit.doc_type}`}>{edit.doc_type}</div>
-                {edit.date && <div className="date-label">{edit.date}</div>}
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                {!isFailed && <div className="card-amount">{totalDisplay}</div>}
-                {!isFailed && (
-                  <div style={{ fontSize: 12, color: 'var(--gray)', marginTop: 4 }}>
-                    {isDone ? '✓ Approved' : isSaving ? 'Saving…' : isOpen ? '▲' : '▼'}
-                  </div>
+                <div className="review-doctype" data-type={edit.doc_type}>
+                  {edit.doc_type}
+                </div>
+                {edit.date && (
+                  <div style={{ fontSize: 12, color: 'var(--cream-dim)', marginTop: 2 }}>{edit.date}</div>
                 )}
+              </div>
+              <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                {!isFailed && (
+                  <div className="review-total">{totalDisplay}</div>
+                )}
+                <div style={{ fontSize: 12, color: 'var(--cream-dim)', marginTop: 4 }}>
+                  {isDone ? '✓ Approved' : isSaving ? 'Saving…' : isFailed ? '' : isOpen ? '▲' : '▼'}
+                </div>
               </div>
             </div>
 
-            {/* Failed card */}
+            {/* Failed / empty extraction — honest message */}
             {isFailed && (
-              <p style={{ fontSize: 13, color: 'var(--red)', marginTop: 8 }}>
-                {result.error ?? 'Processing failed'}
-              </p>
+              <div style={{
+                background: 'rgba(255,68,68,0.08)', borderRadius: 8,
+                padding: '12px 14px', marginTop: 10,
+              }}>
+                <div style={{ fontSize: 13, color: 'var(--red)', fontWeight: 600, marginBottom: 4 }}>
+                  Could not read this document
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--cream-dim)' }}>
+                  {result.error ?? 'Retake the photo in better lighting, or enter the information manually.'}
+                </div>
+              </div>
             )}
 
-            {/* Expanded editable review form */}
+            {/* Expanded editable form — not shown for failed */}
             {isOpen && !isFailed && !isDone && (
-              <div style={{ marginTop: 12 }}>
+              <div style={{ marginTop: 16 }}>
 
-                {/* Confidence summary — helps user know what to check */}
-                <div style={{
-                  display: 'flex', gap: 8, flexWrap: 'wrap',
-                  marginBottom: 14, paddingBottom: 12,
-                  borderBottom: '1px solid var(--border)',
-                }}>
-                  {([
-                    ['vendor',   ex.confidence_vendor],
-                    ['date',     ex.confidence_date],
-                    ['total',    ex.confidence_total],
-                    ['category', ex.confidence_category],
-                  ] as [string, number | null | undefined][]).map(([label, val]) => {
-                    const pct = conf(val);
-                    return (
-                      <div key={label} style={{ fontSize: 11, color: confColor(pct) }}>
-                        {label} {pct != null ? `${pct}%` : 'N/A'}
-                      </div>
-                    );
-                  })}
-                </div>
+                {/* Confidence bar — only shown when values are available */}
+                {(() => {
+                  const scores: [string, number | null][] = [
+                    ['Vendor',   safeConf(ex?.confidence_vendor)],
+                    ['Date',     safeConf(ex?.confidence_date)],
+                    ['Total',    safeConf(ex?.confidence_total)],
+                    ['Category', safeConf(ex?.confidence_category)],
+                  ].filter(([, v]) => v !== null) as [string, number][];
+                  if (scores.length === 0) return null;
+                  return (
+                    <div style={{
+                      display: 'flex', gap: 10, flexWrap: 'wrap',
+                      paddingBottom: 14, marginBottom: 14,
+                      borderBottom: '1px solid var(--border)',
+                    }}>
+                      {scores.map(([lbl, pct]) => (
+                        <div key={lbl} style={{ fontSize: 11, color: confColor(pct) }}>
+                          {lbl} <strong>{pct}%</strong>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
 
-                {/* Vendor */}
-                <label className="review-label">Vendor</label>
-                <input
-                  className="review-input"
-                  value={edit.vendor}
+                {/* Section: Document Identity */}
+                <div className="review-section-label">Document</div>
+
+                <label className="review-label">Vendor / Issuer</label>
+                <input className="review-input" value={edit.vendor}
                   onChange={e => updateField(idx, 'vendor', e.target.value)}
-                  placeholder="Vendor or merchant name"
-                />
+                  placeholder="Vendor or issuer name" />
 
-                {/* Date */}
-                <label className="review-label">Date (YYYY-MM-DD)</label>
-                <input
-                  className="review-input"
-                  type="date"
-                  value={edit.date}
-                  onChange={e => updateField(idx, 'date', e.target.value)}
-                />
+                <label className="review-label">Date</label>
+                <input className="review-input" type="date" value={edit.date}
+                  onChange={e => updateField(idx, 'date', e.target.value)} />
 
-                {/* Doc type */}
-                <label className="review-label">Type</label>
-                <select
-                  className="review-input"
-                  value={edit.doc_type}
-                  onChange={e => updateField(idx, 'doc_type', e.target.value)}
-                >
+                <label className="review-label">Document Type</label>
+                <select className="review-input" value={edit.doc_type}
+                  onChange={e => updateField(idx, 'doc_type', e.target.value)}>
                   {DOC_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
 
-                {/* Category */}
                 <label className="review-label">Category</label>
-                <select
-                  className="review-input"
-                  value={edit.category}
-                  onChange={e => updateField(idx, 'category', e.target.value)}
-                >
+                <select className="review-input" value={edit.category}
+                  onChange={e => updateField(idx, 'category', e.target.value)}>
                   <option value="">— select —</option>
                   {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
 
-                {/* Subtotal / Tax / Total */}
+                {/* Section: Amounts */}
+                <div className="review-section-label" style={{ marginTop: 16 }}>Amounts</div>
+
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
                   <div>
                     <label className="review-label">Subtotal</label>
-                    <input
-                      className="review-input"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={edit.subtotal}
-                      onChange={e => updateField(idx, 'subtotal', e.target.value)}
-                      placeholder="0.00"
-                    />
+                    <input className="review-input" type="number" step="0.01" min="0"
+                      value={edit.subtotal} placeholder="0.00"
+                      onChange={e => updateField(idx, 'subtotal', e.target.value)} />
                   </div>
                   <div>
                     <label className="review-label">Tax</label>
-                    <input
-                      className="review-input"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={edit.tax}
-                      onChange={e => updateField(idx, 'tax', e.target.value)}
-                      placeholder="0.00"
-                    />
+                    <input className="review-input" type="number" step="0.01" min="0"
+                      value={edit.tax} placeholder="0.00"
+                      onChange={e => updateField(idx, 'tax', e.target.value)} />
                   </div>
                   <div>
                     <label className="review-label">Total</label>
-                    <input
-                      className="review-input"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={edit.total}
-                      onChange={e => updateField(idx, 'total', e.target.value)}
-                      placeholder="0.00"
-                    />
+                    <input className="review-input" type="number" step="0.01" min="0"
+                      value={edit.total} placeholder="0.00"
+                      onChange={e => updateField(idx, 'total', e.target.value)} />
                   </div>
                 </div>
 
-                {/* Payment method */}
+                {/* Section: Payment */}
+                <div className="review-section-label" style={{ marginTop: 16 }}>Payment</div>
+
                 <label className="review-label">Payment Method</label>
-                <select
-                  className="review-input"
-                  value={edit.payment_method}
-                  onChange={e => updateField(idx, 'payment_method', e.target.value)}
-                >
+                <select className="review-input" value={edit.payment_method}
+                  onChange={e => updateField(idx, 'payment_method', e.target.value)}>
                   <option value="">— select —</option>
                   {PAYMENT_METHODS.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
 
-                {/* Description */}
+                {/* Section: Notes */}
+                <div className="review-section-label" style={{ marginTop: 16 }}>Notes</div>
+
                 <label className="review-label">Description</label>
-                <input
-                  className="review-input"
-                  value={edit.description}
+                <input className="review-input" value={edit.description}
                   onChange={e => updateField(idx, 'description', e.target.value)}
-                  placeholder="Optional note"
-                />
+                  placeholder="Optional note" />
 
-                {/* ITC flag banner */}
-                {hasReview && (
-                  <div style={{
-                    marginTop: 10, padding: '8px 10px',
-                    background: 'var(--needs-review-bg)',
-                    borderRadius: 6,
-                  }}>
-                    <div style={{ fontSize: 11, color: 'var(--needs-review-text)', fontWeight: 700 }}>ITC Review Required</div>
-                    <div style={{ fontSize: 11, color: 'var(--gray-light)', marginTop: 2 }}>
-                      {itcFlags.filter((f: string) => f !== 'ITC_PST_NOT_RECOVERABLE').join(' · ')}
-                    </div>
-                  </div>
-                )}
-
-                {/* Line items (read-only) */}
-                {ex.line_items && ex.line_items.length > 0 && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontSize: 11, color: 'var(--gray-light)', marginBottom: 4 }}>LINE ITEMS</div>
-                    {ex.line_items.map((li: any, li_idx: number) => {
-                      const qty = typeof li.quantity  === 'number' ? li.quantity  : parseFloat(li.quantity)  || 1;
-                      const up  = typeof li.unit_price === 'number' ? li.unit_price : parseFloat(li.unit_price) || 0;
-                      const tot = typeof li.total      === 'number' ? li.total      : parseFloat(li.total)      || 0;
+                {/* Line items — read-only */}
+                {ex?.line_items && ex.line_items.length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <div className="review-section-label">Line Items</div>
+                    {ex.line_items.map((li: any, i: number) => {
+                      const qty = Number(li.quantity)  || 1;
+                      const up  = Number(li.unit_price) || 0;
+                      const tot = Number(li.total)      || 0;
+                      if (Number.isNaN(qty) || Number.isNaN(up)) return null;
                       return (
-                        <div key={li_idx} style={{ fontSize: 12, display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-                          <span style={{ color: 'var(--white-dim)' }}>{li.name ?? 'Item'} ×{qty} @${up.toFixed(2)}</span>
-                          <span style={{ color: 'var(--gold, #f0a500)' }}>${tot.toFixed(2)}</span>
+                        <div key={i} style={{
+                          display: 'flex', justifyContent: 'space-between',
+                          fontSize: 12, marginBottom: 4, color: 'var(--cream-dim)',
+                        }}>
+                          <span>{li.name ?? 'Item'} ×{qty} @${up.toFixed(2)}</span>
+                          <span style={{ color: 'var(--gold)' }}>${tot.toFixed(2)}</span>
                         </div>
                       );
                     })}
                   </div>
                 )}
 
-                {/* Error */}
+                {/* ITC note */}
+                {hasITCNote && (
+                  <div style={{
+                    marginTop: 14, padding: '10px 12px',
+                    background: 'rgba(255,140,0,0.1)', borderRadius: 8,
+                    borderLeft: '3px solid var(--gold)',
+                  }}>
+                    <div style={{ fontSize: 11, color: 'var(--gold)', fontWeight: 700 }}>ITC Note</div>
+                    <div style={{ fontSize: 11, color: 'var(--cream-dim)', marginTop: 2 }}>
+                      {itcFlags.filter(f => f !== 'ITC_ELIGIBLE' && f !== 'ITC_PST_NOT_RECOVERABLE').join(' · ')}
+                    </div>
+                  </div>
+                )}
+
                 {isError && (
-                  <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 8 }}>
-                    {errors[idx] || 'Save failed. Try again.'}
+                  <p style={{ fontSize: 12, color: 'var(--red)', marginTop: 10 }}>
+                    {errors[idx] || 'Save failed. Please try again.'}
                   </p>
                 )}
 
-                {/* Approve button */}
                 <button
                   className="btn-primary"
                   onClick={() => approve(idx)}
                   disabled={isSaving}
-                  style={{ marginTop: 16, width: '100%' }}
+                  style={{ marginTop: 20, width: '100%' }}
                 >
                   {isSaving ? 'Saving…' : '✓ Approve & Save'}
                 </button>
-
               </div>
             )}
 
-            {/* Collapsed approved summary */}
-            {isDone && isOpen && (
-              <div style={{ marginTop: 8, fontSize: 13, color: 'var(--gray-light)' }}>
-                Approved — changes saved to ledger.
+            {isDone && (
+              <div style={{ marginTop: 8, fontSize: 13, color: 'var(--gold)' }}>
+                Saved to ledger.
               </div>
             )}
           </div>
         );
       })}
 
-      {/* Go to ledger — enabled only after all approvals */}
+      {/* View Ledger — locked until all approvable docs are approved */}
       <button
         className="btn-primary"
         onClick={() => navigate('/ledger', { state: { runId } })}
         disabled={!allApproved}
-        style={{
-          marginTop: 24,
-          width: '100%',
-          opacity: allApproved ? 1 : 0.4,
-        }}
+        style={{ marginTop: 24, width: '100%', opacity: allApproved ? 1 : 0.4 }}
       >
-        {allApproved ? 'View Ledger →' : `Approve all ${results.filter((r, i) => r.status === 'DONE' && statuses[i] !== 'done').length} remaining to continue`}
+        {allApproved
+          ? 'View Ledger →'
+          : `Approve ${approvableResults.filter((r) => statuses[results.indexOf(r)] !== 'done').length} remaining to continue`}
       </button>
 
-      {/* Skip link for failed-only runs */}
-      {successful.length === 0 && (
-        <button
-          className="btn-secondary"
-          onClick={() => navigate('/')}
-          style={{ marginTop: 12, width: '100%' }}
-        >
+      {successCount === 0 && failCount > 0 && (
+        <button className="btn-secondary" onClick={() => navigate('/')}
+          style={{ marginTop: 12, width: '100%', textAlign: 'center' }}>
           Back to Home
         </button>
       )}
