@@ -1,15 +1,18 @@
 /**
  * ProcessingPage.tsx - FME Mission 001 - Snap It & Forget It
  *
- * Processing queue screen. Sequential Gemini processing, Document 1-N with thumbs.
+ * Processing queue. Sequential Gemini processing for 1-N captured images.
+ * Each image may contain multiple detected documents.
+ * ALL detected documents from ALL images are collected and passed to ReviewPage.
  *
- * ROOT CAUSE FIX (2026-09-03):
- * scanApi.processDocument now returns ScanResult directly (unwrapped from results[]).
- * This page collects each ScanResult and passes them to ResultsPage via navigation state.
- * The extraction object on each ScanResult now contains real Gemini values.
+ * MULTI-DOCUMENT REQUIREMENT:
+ * - 1 image with 1 doc  -> 1 ScanResult
+ * - 1 image with 3 docs -> 3 ScanResults (all collected, all reviewed independently)
+ * - 3 images each with 1 doc -> 3 ScanResults
+ * results[0]-only is NOT used here. processDocumentRaw returns the full envelope.
  */
 import { useEffect, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { scanApi, ScanResult } from '../lib/api';
 import { docStore } from '../lib/docStore';
 
@@ -25,20 +28,22 @@ type DocStatus = 'PENDING' | 'PROCESSING' | 'DONE' | 'FAILED';
 interface ProcessedDoc {
   doc: Doc;
   status: DocStatus;
-  result?: ScanResult;
+  detectedCount: number;
+  results: ScanResult[];
   error?: string;
 }
 
 export default function ProcessingPage() {
-  const navigate  = useNavigate();
+  const navigate   = useNavigate();
   const documents: Doc[] = docStore.get() ?? [];
-  const runIdRef  = useRef<string | null>(null);
-  const [items, setItems] = useState<ProcessedDoc[]>(
-    documents.map(doc => ({ doc, status: 'PENDING' as DocStatus }))
-  );
-  const [allDone,  setAllDone]  = useState(false);
-  const [results,  setResults]  = useState<ScanResult[]>([]);
+  const runIdRef   = useRef<string | null>(null);
   const startedRef = useRef(false);
+
+  const [items, setItems] = useState<ProcessedDoc[]>(
+    documents.map(doc => ({ doc, status: 'PENDING' as DocStatus, detectedCount: 0, results: [] }))
+  );
+  const [allDone,        setAllDone]        = useState(false);
+  const [allResults,     setAllResults]     = useState<ScanResult[]>([]);
 
   useEffect(() => {
     if (documents.length === 0) { navigate('/'); return; }
@@ -57,6 +62,7 @@ export default function ProcessingPage() {
     }
     runIdRef.current = rId;
 
+    // All ScanResults across all images — one entry per DETECTED DOCUMENT
     const collected: ScanResult[] = [];
 
     for (let i = 0; i < documents.length; i++) {
@@ -67,49 +73,54 @@ export default function ProcessingPage() {
       ));
 
       try {
-        // scanApi.processDocument now returns ScanResult directly (unwrapped)
-        const result = await scanApi.processDocument({
-          runId: rId,
-          sequence: i + 1,
+        // Use processDocumentRaw to get the full envelope with all detected docs
+        const raw = await scanApi.processDocumentRaw({
+          runId:       rId,
+          sequence:    i + 1,
           imageBase64: doc.base64,
-          mimeType: doc.mimeType,
-          fileName: doc.fileName,
+          mimeType:    doc.mimeType,
+          fileName:    doc.fileName,
         });
 
-        collected.push(result);
+        // Collect ALL results from this image (may be 1, 2, 3+ documents)
+        const imageResults = raw.results ?? [];
+        collected.push(...imageResults);
+
+        const anyFailed = imageResults.every(r => r.status === 'FAILED');
+
         setItems(prev => prev.map((item, idx) =>
-          idx === i ? { ...item, status: result.status === 'FAILED' ? 'FAILED' : 'DONE', result } : item
+          idx === i ? {
+            ...item,
+            status: anyFailed ? 'FAILED' : 'DONE',
+            detectedCount: raw.detectedCount,
+            results: imageResults,
+          } : item
         ));
 
       } catch (err: any) {
         const failResult: ScanResult = {
-          documentId: '',
-          extractionId: '',
-          ledgerEntryId: '',
-          journalEntryId: '',
-          refNumber: '',
-          status: 'FAILED',
-          lineCount: 0,
-          itcFlags: [],
+          documentId: '', extractionId: '', ledgerEntryId: '',
+          journalEntryId: '', refNumber: '', lineCount: 0,
+          itcFlags: [], status: 'FAILED',
           error: err.message ?? 'Processing failed',
           extraction: {} as any,
         };
         collected.push(failResult);
         setItems(prev => prev.map((item, idx) =>
-          idx === i ? { ...item, status: 'FAILED', error: err.message } : item
+          idx === i ? { ...item, status: 'FAILED', results: [failResult], error: err.message } : item
         ));
       }
     }
 
     try { await scanApi.finalizeRun(rId); } catch { /* non-fatal */ }
     docStore.clear();
-    setResults(collected);
+    setAllResults(collected);
     setAllDone(true);
   }
 
-  const docCount  = documents.length;
-  const doneCount = items.filter(i => i.status === 'DONE').length;
-  const failCount = items.filter(i => i.status === 'FAILED').length;
+  const totalDocs    = allResults.length;
+  const successDocs  = allResults.filter(r => r.status === 'DONE').length;
+  const failedImages = items.filter(i => i.status === 'FAILED').length;
 
   return (
     <div className="screen">
@@ -118,34 +129,38 @@ export default function ProcessingPage() {
       <h1 style={{ marginTop: 32, marginBottom: 8 }}>
         {allDone
           ? 'Done!'
-          : docCount === 1
+          : documents.length === 1
             ? 'Reading document…'
-            : `Reading ${docCount} documents…`}
+            : `Reading ${documents.length} images…`}
       </h1>
 
       {allDone && (
         <p className="subtext">
-          {doneCount} of {docCount} read successfully
-          {failCount > 0 ? ` · ${failCount} failed` : ''}
+          {successDocs} document{successDocs !== 1 ? 's' : ''} extracted
+          {failedImages > 0 ? ` · ${failedImages} image${failedImages !== 1 ? 's' : ''} failed` : ''}
         </p>
       )}
 
       {items.map((item, idx) => {
-        const ex = item.result?.extraction;
-        // Show best available label from extraction
-        const label = ex?.vendor ?? ex?.issuer ?? null;
-        const docType = ex?.doc_type ?? null;
+        // Show first successful result label for this image
+        const firstDone = item.results.find(r => r.status === 'DONE');
+        const ex        = firstDone?.extraction;
+        const label     = ex?.vendor ?? ex?.issuer ?? null;
+        const docType   = ex?.doc_type ?? null;
+        const extra     = item.detectedCount > 1
+          ? ` · ${item.detectedCount} documents detected`
+          : '';
 
         return (
           <div key={idx} className="scan-doc-row">
             <img
               src={item.doc.dataUrl}
-              alt={`Document ${idx + 1}`}
+              alt={`Image ${idx + 1}`}
               className="scan-thumb"
             />
             <div style={{ flex: 1 }}>
               <div className="scan-doc-name">
-                {label ?? `Document ${idx + 1}`}
+                {label ? `${label}${extra}` : `Image ${idx + 1}${extra}`}
               </div>
               {docType && (
                 <div style={{ fontSize: 11, color: 'var(--gray-light)', marginTop: 2 }}>
@@ -159,7 +174,7 @@ export default function ProcessingPage() {
               )}
             </div>
 
-            {item.status === 'PENDING'    && <span style={{ color: 'var(--gray)', fontSize: 13 }}>Waiting</span>}
+            {item.status === 'PENDING'    && <span style={{ color: 'var(--gray)',   fontSize: 13 }}>Waiting</span>}
             {item.status === 'PROCESSING' && <span className="scan-status-processing">⏳</span>}
             {item.status === 'DONE'       && <span className="scan-status-done">✓ Done</span>}
             {item.status === 'FAILED'     && <span className="scan-status-failed">✗ Failed</span>}
@@ -172,10 +187,10 @@ export default function ProcessingPage() {
           className="btn-primary"
           style={{ marginTop: 24 }}
           onClick={() => navigate('/results', {
-            state: { results, runId: runIdRef.current },
+            state: { results: allResults, runId: runIdRef.current },
           })}
         >
-          Review {doneCount} document{doneCount !== 1 ? 's' : ''} →
+          Review {successDocs} document{successDocs !== 1 ? 's' : ''} →
         </button>
       )}
     </div>
