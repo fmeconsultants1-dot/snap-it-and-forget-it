@@ -93,9 +93,7 @@ export default {
 
       // 0. GET /version
       if (path === '/version' && method === 'GET') {
-        const gitSha = (env as any).GIT_SHA ?? 'unknown';
-        const buildTime = (env as any).BUILD_TIME ?? 'unknown';
-        return json({ git_sha: gitSha, build_time: buildTime, worker: 'snap-it-forget-it-api-extract', ts: new Date().toISOString() }, 200, origin);
+        return json({ git_sha: (env as any).GIT_SHA ?? 'unknown', build_time: (env as any).BUILD_TIME ?? 'unknown', worker: 'snap-it-forget-it-api-extract', ts: new Date().toISOString() }, 200, origin);
       }
 
       // 1. GET /health
@@ -258,22 +256,23 @@ export default {
         return json({ entries: result.results }, 200, origin);
       }
 
-      // 16. GET /api/diagnostic/extraction/:id  — Bug B trace tool
-      // Returns raw extraction record including raw_fields for date tracing.
+      // 16. GET /api/diagnostic/extraction/:id
+      // Bug B trace: returns raw extraction record including raw_fields for date investigation.
+      // Schema: extractions has extracted_at (not created_at).
       const extractionDiagMatch = path.match(/^\/api\/diagnostic\/extraction\/([^/]+)$/);
       if (extractionDiagMatch && method === 'GET') {
         const row = await env.DB.prepare(
-          'SELECT id, date, raw_fields, gemini_model, created_at FROM extractions WHERE id = ?'
+          'SELECT id, date, raw_fields, gemini_model, extracted_at FROM extractions WHERE id = ?'
         ).bind(extractionDiagMatch[1]!).first() as any;
         if (!row) return err('Extraction not found', 404, origin);
         let rawFields: any = {};
         try { rawFields = JSON.parse(row.raw_fields ?? '{}'); } catch { rawFields = {}; }
         return json({
-          extraction_id:    row.id,
-          extraction_date:  row.date,
-          raw_fields_date:  rawFields.date ?? null,
-          gemini_model:     row.gemini_model,
-          created_at:       row.created_at,
+          extraction_id:   row.id,
+          extraction_date: row.date,
+          raw_fields_date: rawFields.date ?? null,
+          gemini_model:    row.gemini_model,
+          extracted_at:    row.extracted_at,
         }, 200, origin);
       }
 
