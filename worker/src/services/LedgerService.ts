@@ -1,14 +1,15 @@
 /**
  * LedgerService.ts - FME Mission 001 - Snap It & Forget It
  *
- * BUG B FINAL FIX (2026-09-04):
- * validateApprovalReadiness() now checks BOTH format AND year range.
- * Matches the GeminiAdapter.validateDate() rule exactly:
- *   year >= currentYear - 5 AND year <= currentYear + 1
- * So 2020-07-31 is rejected at approval even if it somehow passed extraction.
- *
- * Previous: only checked YYYY-MM-DD format — 2020-07-31 passed.
- * Now: year range enforced — 2020-07-31 rejected.
+ * BUG D FIX (2026-09-04):
+ * getRunningTotal() now accepts the full filter set matching getLedgerEntries().
+ * SQL accounting:
+ *   RECEIPT  -> +amount
+ *   INVOICE  -> +amount
+ *   REFUND   -> -amount
+ *   STATEMENT, DOCUMENT, other -> 0
+ * dateFrom/dateTo filter on the business-document `date` column.
+ * All filters applied identically to entries list and running total.
  */
 
 import { toCents, toDollars, splitProportional } from '../lib/money';
@@ -86,21 +87,18 @@ export interface ReviewCorrections {
   confirm_zero_total?: boolean;
 }
 
-/**
- * Centralized approval-readiness validator.
- * Called by updateAndApprove() and approveLedgerEntry().
- *
- * Date validation matches GeminiAdapter.validateDate() exactly:
- *   - must match YYYY-MM-DD
- *   - year must be within [currentYear-5, currentYear+1]
- *   So e.g. in 2026: accepts 2021–2027, rejects 2020 and 2028+.
- *
- * Date requirement by doc type:
- *   RECEIPT   = required + year-range
- *   INVOICE   = required + year-range
- *   STATEMENT = required + year-range
- *   DOCUMENT  = optional
- */
+/** Shared filter shape used by getLedgerEntries and getRunningTotal */
+export interface LedgerFilter {
+  runId?: string;
+  dateFilter?: string;   // 'today' = created_at today
+  entryType?: string;
+  status?: string;
+  dateFrom?: string;     // business date >= dateFrom
+  dateTo?: string;       // business date <= dateTo
+  limit?: number;
+  offset?: number;
+}
+
 function validateApprovalReadiness(
   docType: string,
   vendor: string | null,
@@ -114,21 +112,14 @@ function validateApprovalReadiness(
   if (requiresVendor && (!vendor || vendor.trim() === '')) {
     return 'Vendor / Issuer is required for receipts and invoices.';
   }
-
   if (requiresDate) {
     const currentYear = new Date().getFullYear();
     const year = date ? parseInt(date.slice(0, 4), 10) : NaN;
-    if (
-      !date ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
-      isNaN(year) ||
-      year < currentYear - 5 ||
-      year > currentYear + 1
-    ) {
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(year) ||
+        year < currentYear - 5 || year > currentYear + 1) {
       return 'A valid date (YYYY-MM-DD) is required for receipts, invoices, and statements.';
     }
   }
-
   if ((docType === 'RECEIPT' || docType === 'INVOICE') && (total === null || !isFinite(total))) {
     return 'A valid total amount is required for receipts and invoices.';
   }
@@ -189,7 +180,6 @@ function buildJournalLines(
   const itcFlags: string[] = [];
   const isExpense = extraction.doc_type === 'RECEIPT' || extraction.doc_type === 'INVOICE';
   const isInvoice = extraction.doc_type === 'INVOICE';
-
   if (!isExpense || (extraction.total ?? 0) <= 0) return { lines: [], itcFlags: [] };
 
   const totalCents       = toCents(extraction.total!);
@@ -198,16 +188,13 @@ function buildJournalLines(
   const pstCents         = toCents(extraction.tax_pst ?? 0);
   const recoverableCents = gstCents + hstCents;
   const subtotalCents    = totalCents - gstCents - hstCents - pstCents;
-
   const exp    = expenseAccount(extraction.category);
   const settle = settlementAccount(extraction, config, isInvoice);
 
   const itcDet = itcConfig
-    ? determineITC({
-        doc_type: extraction.doc_type,
+    ? determineITC({ doc_type: extraction.doc_type,
         tax_gst: toDollars(gstCents), tax_hst: toDollars(hstCents), tax_pst: toDollars(pstCents),
-        confidence_total: extraction.confidence_total,
-        date: extraction.date, category: extraction.category,
+        confidence_total: extraction.confidence_total, date: extraction.date, category: extraction.category,
       }, itcConfig)
     : { eligible: false, flags: [] as string[], recoverable_gst: 0, recoverable_hst: 0,
         non_recoverable_pst: toDollars(pstCents), review_required: false };
@@ -223,7 +210,6 @@ function buildJournalLines(
       debitCents: recoverableCents, creditCents: 0, memo: 'ITC' });
     itcFlags.push('ITC_ELIGIBLE');
   }
-
   lines.push({ code: settle.code, name: settle.name, debitCents: 0, creditCents: totalCents,
     memo: `Payment: ${extraction.payment_method ?? 'Cash'}` });
 
@@ -231,12 +217,30 @@ function buildJournalLines(
   const sumCR = lines.reduce((s, l) => s + l.creditCents, 0);
   if (Math.abs(sumDR - sumCR) > 1)
     throw new Error(`Journal balance violation: DR ${toDollars(sumDR)} != CR ${toDollars(sumCR)}`);
-
   return { lines, itcFlags };
 }
 
 function generateId()  { return crypto.randomUUID(); }
 function generateRef() { return Math.random().toString(16).slice(2, 8).toUpperCase(); }
+
+/**
+ * Build the shared WHERE clause for both getLedgerEntries and getRunningTotal.
+ * Returns { clause, params } where clause starts with ' AND ...' (appended to WHERE 1=1).
+ */
+function buildWhereClause(filter: LedgerFilter): { clause: string; params: unknown[] } {
+  let clause = '';
+  const params: unknown[] = [];
+
+  if (filter.runId)     { clause += ' AND run_id=?';    params.push(filter.runId); }
+  if (filter.dateFilter === 'today') clause += " AND date(created_at)=date('now')";
+  if (filter.entryType) { clause += ' AND entry_type=?'; params.push(filter.entryType); }
+  if (filter.status)    { clause += ' AND status=?';    params.push(filter.status); }
+  // dateFrom/dateTo filter on the business-document date column
+  if (filter.dateFrom)  { clause += ' AND date >= ?';   params.push(filter.dateFrom); }
+  if (filter.dateTo)    { clause += ' AND date <= ?';   params.push(filter.dateTo); }
+
+  return { clause, params };
+}
 
 export class LedgerService {
   private db: D1Database;
@@ -262,10 +266,7 @@ export class LedgerService {
     const entity      = extraction.vendor ?? extraction.issuer ?? 'Unknown';
     const isExpense   = extraction.doc_type === 'RECEIPT' || extraction.doc_type === 'INVOICE';
     const balanceType = isExpense ? 'DEBIT' : 'BALANCE';
-
-    // null date stays null — never substitute today silently
     const ledgerDate: string | null = extraction.date ?? null;
-    // journal NOT NULL constraint — provisional draft date, replaced on approval
     const journalDate: string = ledgerDate ?? new Date().toISOString().slice(0, 10);
 
     const { lines, itcFlags } = buildJournalLines(extraction, this.config, this.itcConfig);
@@ -281,7 +282,6 @@ export class LedgerService {
     const reviewNote = noteFlags.length > 0 ? noteFlags.join(', ') : null;
 
     const stmts: D1PreparedStatement[] = [];
-
     stmts.push(this.db.prepare(`
       INSERT INTO ledger_entries
         (id,run_id,document_id,extraction_id,entry_type,entity,date,
@@ -308,7 +308,6 @@ export class LedgerService {
       `).bind(generateId(), jeId, l.code, l.name,
         toDollars(l.debitCents), toDollars(l.creditCents), l.memo, i + 1));
     }
-
     stmts.push(this.db.prepare(`
       INSERT INTO audit_log(entity_type,entity_id,action,after_state,performed_at)
       VALUES('ledger_entries',?,?,?,datetime('now'))
@@ -326,14 +325,9 @@ export class LedgerService {
     corrections: ReviewCorrections,
     approvedBy = 'user'
   ): Promise<{ isBalanced: boolean; itcFlags: string[] }> {
-    const existing = await this.db
-      .prepare('SELECT * FROM ledger_entries WHERE id=?')
-      .bind(ledgerEntryId).first() as any;
+    const existing = await this.db.prepare('SELECT * FROM ledger_entries WHERE id=?').bind(ledgerEntryId).first() as any;
     if (!existing) throw new Error(`Ledger entry not found: ${ledgerEntryId}`);
-
-    const jeRow = await this.db
-      .prepare('SELECT id FROM journal_entries WHERE ledger_entry_id=? LIMIT 1')
-      .bind(ledgerEntryId).first() as any;
+    const jeRow = await this.db.prepare('SELECT id FROM journal_entries WHERE ledger_entry_id=? LIMIT 1').bind(ledgerEntryId).first() as any;
     if (!jeRow) throw new Error(`Journal entry not found for ledger entry: ${ledgerEntryId}`);
     const jeId: string = jeRow.id;
 
@@ -353,18 +347,16 @@ export class LedgerService {
     const taxGst        = corrections.tax_gst !== undefined ? (corrections.tax_gst ?? 0) : (rawTax != null ? rawTax : 0);
     const taxHst        = corrections.tax_hst !== undefined ? (corrections.tax_hst ?? 0) : 0;
     const taxPst        = corrections.tax_pst !== undefined ? (corrections.tax_pst ?? 0) : 0;
-    const subtotal      = corrections.subtotal !== undefined ? (corrections.subtotal ?? 0)
-                        : Math.max(0, total - taxGst - taxHst - taxPst);
+    const subtotal      = corrections.subtotal !== undefined ? (corrections.subtotal ?? 0) : Math.max(0, total - taxGst - taxHst - taxPst);
     const taxValue: number | null = (rawTax ?? (taxGst + taxHst + taxPst)) || null;
-    const safeDate = date!; // validated non-null for RECEIPT/INVOICE/STATEMENT above
+    const safeDate = date!;
 
     const syntheticExtraction: ExtractionResult = {
       doc_type: docType, vendor, date: safeDate, total, subtotal,
       tax: taxValue, tax_gst: taxGst, tax_hst: taxHst, tax_pst: taxPst,
       payment_method: paymentMethod, category, description,
       issuer: null, line_items: [], raw_fields: {},
-      confidence_vendor: 1.0, confidence_date: 1.0,
-      confidence_total: 1.0, confidence_category: 1.0,
+      confidence_vendor: 1.0, confidence_date: 1.0, confidence_total: 1.0, confidence_category: 1.0,
       gemini_model: 'user-corrected',
     };
 
@@ -377,30 +369,23 @@ export class LedgerService {
     const isExpense  = docType === 'RECEIPT' || docType === 'INVOICE';
 
     const stmts: D1PreparedStatement[] = [];
-
     stmts.push(this.db.prepare(`
       UPDATE ledger_entries
       SET entity=?, date=?, amount=?, debit_amount=?, credit_amount=?,
           entry_type=?, review_note=?, status='APPROVED',
           approved_at=datetime('now'), approved_by=?
       WHERE id=?
-    `).bind(entity, safeDate, total,
-      isExpense ? total : 0, isExpense ? total : 0,
+    `).bind(entity, safeDate, total, isExpense ? total : 0, isExpense ? total : 0,
       docType, reviewNote, approvedBy, ledgerEntryId));
-
     stmts.push(this.db.prepare(`
       UPDATE journal_entries
       SET entry_date=?, description=?, doc_type=?,
-          status='APPROVED', is_balanced=?,
-          total_debits=?, total_credits=?,
+          status='APPROVED', is_balanced=?, total_debits=?, total_credits=?,
           approved_at=datetime('now'), approved_by=?
       WHERE id=?
     `).bind(safeDate, description ?? entity, docType,
-      isBalanced ? 1 : 0, toDollars(sumDRCents), toDollars(sumCRCents),
-      approvedBy, jeId));
-
+      isBalanced ? 1 : 0, toDollars(sumDRCents), toDollars(sumCRCents), approvedBy, jeId));
     stmts.push(this.db.prepare('DELETE FROM journal_lines WHERE journal_entry_id=?').bind(jeId));
-
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i]!;
       stmts.push(this.db.prepare(`
@@ -409,30 +394,22 @@ export class LedgerService {
       `).bind(generateId(), jeId, l.code, l.name,
         toDollars(l.debitCents), toDollars(l.creditCents), l.memo, i + 1));
     }
-
     stmts.push(this.db.prepare(`
       INSERT INTO audit_log(entity_type,entity_id,action,before_state,after_state,performed_at)
       VALUES('ledger_entries',?,?,?,?,datetime('now'))
     `).bind(ledgerEntryId, 'UPDATE_AND_APPROVE',
       JSON.stringify({ status: existing.status, amount: existing.amount, entity: existing.entity }),
       JSON.stringify({ status: 'APPROVED', amount: total, entity, corrections })));
-
     await this.db.batch(stmts);
     return { isBalanced, itcFlags };
   }
 
   async approveLedgerEntry(id: string, approvedBy = 'user'): Promise<void> {
-    const existing = await this.db
-      .prepare('SELECT * FROM ledger_entries WHERE id=?')
-      .bind(id).first() as any;
+    const existing = await this.db.prepare('SELECT * FROM ledger_entries WHERE id=?').bind(id).first() as any;
     if (!existing) throw new Error(`Ledger entry not found: ${id}`);
-
     const validationError = validateApprovalReadiness(
-      existing.entry_type, existing.entity, existing.date, existing.amount,
-      false
-    );
+      existing.entry_type, existing.entity, existing.date, existing.amount, false);
     if (validationError) throw new Error(validationError);
-
     await this.db.batch([
       this.db.prepare("UPDATE ledger_entries SET status='APPROVED',approved_at=datetime('now'),approved_by=? WHERE id=?").bind(approvedBy, id),
       this.db.prepare("UPDATE journal_entries SET status='APPROVED',approved_at=datetime('now'),approved_by=? WHERE ledger_entry_id=?").bind(approvedBy, id),
@@ -440,43 +417,58 @@ export class LedgerService {
     ]);
   }
 
-  async getLedgerEntries(filter: { runId?: string; dateFilter?: string; entryType?: string; status?: string; limit?: number; offset?: number }): Promise<LedgerEntryRow[]> {
-    let q = 'SELECT * FROM ledger_entries WHERE 1=1';
-    const p: unknown[] = [];
-    if (filter.runId)     { q += ' AND run_id=?';    p.push(filter.runId); }
-    if (filter.dateFilter === 'today') q += " AND date(created_at)=date('now')";
-    if (filter.entryType) { q += ' AND entry_type=?'; p.push(filter.entryType); }
-    if (filter.status)    { q += ' AND status=?';    p.push(filter.status); }
-    q += ' ORDER BY created_at DESC';
-    q += ` LIMIT ${filter.limit ?? 100} OFFSET ${filter.offset ?? 0}`;
-    const r = await this.db.prepare(q).bind(...p).all();
+  async getLedgerEntries(filter: LedgerFilter): Promise<LedgerEntryRow[]> {
+    const { clause, params } = buildWhereClause(filter);
+    const limit  = filter.limit  ?? 100;
+    const offset = filter.offset ?? 0;
+    const q = `SELECT * FROM ledger_entries WHERE 1=1${clause} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`;
+    const r = await this.db.prepare(q).bind(...params).all();
     return r.results as unknown as LedgerEntryRow[];
   }
 
-  async getJournalEntries(filter: { runId?: string; dateFilter?: string; entryType?: string; status?: string }): Promise<JournalEntryRow[]> {
-    let q = `SELECT je.*,le.run_id,le.entry_type,le.entity,le.status as ledger_status
-      FROM journal_entries je JOIN ledger_entries le ON je.ledger_entry_id=le.id WHERE 1=1`;
-    const p: unknown[] = [];
-    if (filter.runId)     { q += ' AND le.run_id=?';     p.push(filter.runId); }
-    if (filter.dateFilter === 'today') q += " AND date(je.created_at)=date('now')";
-    if (filter.entryType) { q += ' AND le.entry_type=?'; p.push(filter.entryType); }
-    if (filter.status)    { q += ' AND je.status=?';     p.push(filter.status); }
-    q += ' ORDER BY je.created_at DESC LIMIT 200';
-    const r = await this.db.prepare(q).bind(...p).all();
+  /**
+   * getRunningTotal — Bug D fix.
+   * Accepts the same filter as getLedgerEntries so the total always matches
+   * the visible rows.
+   *
+   * Accounting SQL:
+   *   RECEIPT  -> +amount
+   *   INVOICE  -> +amount
+   *   REFUND   -> -amount   (covers FULL/PARTIAL/CREDIT_NOTE/CARD_REFUND)
+   *   anything else (STATEMENT, DOCUMENT, ...) -> 0
+   */
+  async getRunningTotal(filter: LedgerFilter = {}): Promise<number> {
+    const { clause, params } = buildWhereClause(filter);
+    const q = `
+      SELECT ROUND(COALESCE(SUM(
+        CASE
+          WHEN entry_type IN ('RECEIPT','INVOICE') THEN amount
+          WHEN entry_type = 'REFUND'               THEN -amount
+          ELSE 0
+        END
+      ), 0), 2) AS t
+      FROM ledger_entries
+      WHERE 1=1${clause}
+    `;
+    const r = await this.db.prepare(q).bind(...params).first() as any;
+    return r?.t ?? 0;
+  }
+
+  async getJournalEntries(filter: LedgerFilter): Promise<JournalEntryRow[]> {
+    const { clause, params } = buildWhereClause(filter);
+    const q = `
+      SELECT je.*,le.run_id,le.entry_type,le.entity,le.status as ledger_status
+      FROM journal_entries je JOIN ledger_entries le ON je.ledger_entry_id=le.id
+      WHERE 1=1${clause}
+      ORDER BY je.created_at DESC LIMIT 200
+    `;
+    const r = await this.db.prepare(q).bind(...params).all();
     const entries = r.results as unknown as JournalEntryRow[];
     for (const e of entries) {
       const lr = await this.db.prepare('SELECT * FROM journal_lines WHERE journal_entry_id=? ORDER BY line_order').bind(e.id).all();
       e.lines = lr.results as unknown as JournalLineRow[];
     }
     return entries;
-  }
-
-  async getRunningTotal(runId?: string): Promise<number> {
-    const q = runId
-      ? "SELECT SUM(amount) as t FROM ledger_entries WHERE entry_type IN ('RECEIPT','INVOICE') AND run_id=?"
-      : "SELECT SUM(amount) as t FROM ledger_entries WHERE entry_type IN ('RECEIPT','INVOICE')";
-    const r = runId ? await this.db.prepare(q).bind(runId).first() : await this.db.prepare(q).first();
-    return (r as any)?.t ?? 0;
   }
 
   async getLedgerEntryById(id: string): Promise<LedgerEntryRow | null> {
