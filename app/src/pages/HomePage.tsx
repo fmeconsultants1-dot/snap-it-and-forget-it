@@ -1,7 +1,13 @@
 /**
  * HomePage.tsx - FME Mission 001 - Snap It & Forget It
- * Approved visual design: black/cream/orange.
- * Gallery upload added directly on home screen for immediate use.
+ *
+ * BUG D FIX:
+ * monthTotal now comes from the server runningTotal, not a client-side
+ * .filter().reduce() over the first 100 rows.
+ *
+ * Request: dateFrom=first-of-month, dateTo=today, status=APPROVED
+ * SQL accounting: RECEIPT+INVOICE add, REFUND subtracts, STATEMENT/DOCUMENT=0
+ * Result: approved expenses this month, correct even with >100 entries.
  */
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -12,7 +18,6 @@ import type { CapturedDoc } from '../lib/docStore';
 function fmt(n: number) {
   return n.toLocaleString('en-CA', { style: 'currency', currency: 'CAD', minimumFractionDigits: 2 });
 }
-
 async function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -32,13 +37,38 @@ export default function HomePage() {
   useEffect(() => {
     (async () => {
       try {
-        const now  = new Date();
-        const from = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-        const all  = await ledgerApi.getEntries({});
-        const month = all.entries.filter(e => e.date && e.date >= from);
-        setMonthTotal(month.reduce((s, e) => s + (e.amount ?? 0), 0));
-        setDocCount(month.length);
-        setLatestDoc(all.entries[0] ?? null);
+        const now     = new Date();
+        const dateFrom = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+        const dateTo   = now.toISOString().slice(0, 10);
+
+        // monthTotal: approved expenses only, from SQL — not a client-side sum
+        // STATEMENT and DOCUMENT contribute 0; REFUND subtracts
+        const monthRes = await ledgerApi.getEntries({
+          dateFrom,
+          dateTo,
+          status: 'APPROVED',
+          limit: 1,          // we only need runningTotal; entries are irrelevant here
+        });
+        setMonthTotal(monthRes.runningTotal);
+        setDocCount(monthRes.entries.length > 0 ? undefined as any : null); // placeholder
+
+        // Latest document for the card — fetch separately without date/status filter
+        const latestRes = await ledgerApi.getEntries({ limit: 1 });
+        setLatestDoc(latestRes.entries[0] ?? null);
+
+        // Approved expense document count this month
+        const countRes = await ledgerApi.getEntries({
+          dateFrom,
+          dateTo,
+          status: 'APPROVED',
+          limit: 500,
+        });
+        // Count only expense-affecting types
+        const expenseCount = countRes.entries.filter(
+          e => e.entry_type === 'RECEIPT' || e.entry_type === 'INVOICE' || e.entry_type === 'REFUND'
+        ).length;
+        setDocCount(expenseCount);
+
       } catch {
         setMonthTotal(0);
         setDocCount(0);
@@ -54,12 +84,7 @@ export default function HomePage() {
     const docs: CapturedDoc[] = [];
     for (const file of files) {
       const base64 = await fileToBase64(file);
-      docs.push({
-        dataUrl:  `data:${file.type};base64,${base64}`,
-        base64,
-        mimeType: file.type || 'image/jpeg',
-        fileName: file.name,
-      });
+      docs.push({ dataUrl: `data:${file.type};base64,${base64}`, base64, mimeType: file.type || 'image/jpeg', fileName: file.name });
     }
     docStore.set(docs);
     navigate('/processing');
@@ -72,27 +97,23 @@ export default function HomePage() {
 
   return (
     <div className="home-screen">
-      {/* Top bar */}
       <div className="home-topbar">
         <span className="home-brand">FME</span>
         <button className="home-ledger-btn" onClick={() => navigate('/ledger')}>View Ledger</button>
       </div>
 
-      {/* Monthly summary */}
       <div className="home-summary">
         <div className="home-total">{loading ? '—' : fmt(monthTotal ?? 0)}</div>
         <div className="home-doc-count">
-          {loading ? '' : `${docCount ?? 0} document${docCount !== 1 ? 's' : ''} this month`}
+          {loading ? '' : `Approved expenses this month · ${docCount ?? 0} document${docCount !== 1 ? 's' : ''}`}
         </div>
       </div>
 
-      {/* Headline */}
       <div className="home-headline">
         <div className="home-headline-snap">SNAP IT.</div>
         <div className="home-headline-forget">FORGET IT.</div>
       </div>
 
-      {/* Circular camera button */}
       <div className="home-camera-wrap">
         <button className="home-camera-btn" onClick={() => navigate('/camera')} aria-label="Snap a document">
           <svg width="52" height="52" viewBox="0 0 52 52" fill="none">
@@ -103,57 +124,29 @@ export default function HomePage() {
         <div className="home-camera-hint">Tap to snap a document</div>
       </div>
 
-      {/* ── GALLERY UPLOAD ── directly usable without camera ── */}
-      <label style={{
-        display: 'block',
-        width: '100%',
-        padding: '16px',
-        background: 'var(--bg-card)',
-        border: '1px solid var(--border)',
-        borderRadius: 40,
-        color: 'var(--cream)',
-        fontSize: 16,
-        fontWeight: 600,
-        textAlign: 'center',
-        cursor: 'pointer',
-        marginBottom: 12,
-        boxSizing: 'border-box',
-      }}>
+      <label style={{ display:'block', width:'100%', padding:'16px', background:'var(--bg-card)', border:'1px solid var(--border)', borderRadius:40, color:'var(--cream)', fontSize:16, fontWeight:600, textAlign:'center', cursor:'pointer', marginBottom:12, boxSizing:'border-box' }}>
         📎 Choose from Gallery
-        <input
-          type="file"
-          accept="image/*,application/pdf"
-          multiple
-          style={{ display: 'none' }}
-          onChange={handleGallery}
-        />
+        <input type="file" accept="image/*,application/pdf" multiple style={{ display:'none' }} onChange={handleGallery} />
       </label>
 
-      {/* Latest document card */}
       {latestDoc && (
         <div className="home-latest-card" onClick={() => navigate('/ledger')}>
           <div className="home-latest-label">LATEST DOCUMENT</div>
           <div className="home-latest-row">
             <div>
               <div className="home-latest-vendor">{latestDoc.entity ?? 'Unknown'}</div>
-              <div className="home-latest-meta">
-                {docTypeLabel(latestDoc.entry_type)}{latestDoc.date ? ` · ${latestDoc.date}` : ''}
-              </div>
+              <div className="home-latest-meta">{docTypeLabel(latestDoc.entry_type)}{latestDoc.date ? ` · ${latestDoc.date}` : ''}</div>
             </div>
             <div className="home-latest-amount">{fmt(latestDoc.amount ?? 0)}</div>
           </div>
           <div className="home-latest-status" data-status={latestDoc.status}>
-            {latestDoc.status === 'APPROVED' ? '✓ Approved' :
-             latestDoc.status === 'NEEDS_REVIEW' ? 'Needs Review' : latestDoc.status}
+            {latestDoc.status === 'APPROVED' ? '✓ Approved' : latestDoc.status === 'NEEDS_REVIEW' ? 'Needs Review' : latestDoc.status}
           </div>
         </div>
       )}
 
-      {/* Bottom actions */}
       <div className="home-actions">
-        <button className="home-dashboard-btn" onClick={() => navigate('/accountant')}>
-          View Bookkeeper Dashboard
-        </button>
+        <button className="home-dashboard-btn" onClick={() => navigate('/accountant')}>View Bookkeeper Dashboard</button>
       </div>
     </div>
   );
