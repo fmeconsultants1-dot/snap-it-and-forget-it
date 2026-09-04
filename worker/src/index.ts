@@ -1,12 +1,17 @@
 /**
  * index.ts - FME Mission 001 - Snap It & Forget It
- * Cloudflare Worker entry point. 26 routes total.
- * index.ts: 14 | extended.ts: 12
+ * Cloudflare Worker entry point. 27 routes total.
+ * index.ts: 15 | extended.ts: 12
  */
 import { ScanService, Env } from './services/ScanService';
 import { LedgerService } from './services/LedgerService';
 import { WatchdogService } from './services/WatchdogService';
 import { handleExtended } from './routes/extended';
+
+// Build-time constants injected by the deploy workflow via wrangler vars
+// Fallback values used in local dev
+declare const __GIT_SHA__: string | undefined;
+declare const __BUILD_TIME__: string | undefined;
 
 function cors(origin: string) {
   return {
@@ -65,14 +70,18 @@ export default {
     }
 
     // ── STATIC FILE SERVING (frontend) ──
-    if (!path.startsWith('/api/') && path !== '/health' && path !== '/health/full') {
+    if (!path.startsWith('/api/') && path !== '/health' && path !== '/health/full' && path !== '/version') {
       let filePath = path === '/' ? '/index.html' : path;
       const key = `frontend${filePath}`;
       const obj = await env.DOCUMENTS.get(key);
       if (obj) {
         const blob = await obj.arrayBuffer();
         const ct = getContentType(filePath);
-        const cache = filePath.endsWith('.html') ? 'no-cache' : 'public, max-age=31536000, immutable';
+        // index.html: no-store so browser always revalidates and gets latest SW/app
+        // All other assets: immutable (content-addressed by hash in filename)
+        const cache = filePath.endsWith('.html')
+          ? 'no-store'
+          : 'public, max-age=31536000, immutable';
         return new Response(blob, {
           status: 200,
           headers: {
@@ -89,13 +98,29 @@ export default {
           const blob = await idx.arrayBuffer();
           return new Response(blob, {
             status: 200,
-            headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...cors(origin) },
+            headers: {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Cache-Control': 'no-store',
+              ...cors(origin),
+            },
           });
         }
       }
     }
 
     try {
+
+      // 0. GET /version — build identity for phone verification
+      if (path === '/version' && method === 'GET') {
+        const gitSha = (env as any).GIT_SHA ?? 'unknown';
+        const buildTime = (env as any).BUILD_TIME ?? 'unknown';
+        return json({
+          git_sha: gitSha,
+          build_time: buildTime,
+          worker: 'snap-it-forget-it-api-extract',
+          ts: new Date().toISOString(),
+        }, 200, origin);
+      }
 
       // 1. GET /health
       if (path === '/health' && method === 'GET') {
@@ -180,7 +205,6 @@ export default {
       }
 
       // 9. GET /api/ledger/:id
-      // Must come AFTER /api/ledger/journal to avoid prefix collision
       const ledgerGetMatch = path.match(/^\/api\/ledger\/([^/]+)$/);
       if (ledgerGetMatch && method === 'GET') {
         const ledger = new LedgerService(env.DB);
@@ -189,7 +213,7 @@ export default {
         return json(entry, 200, origin);
       }
 
-      // 10. PATCH /api/ledger/:id  — Stage 6: user corrects + approves in one call
+      // 10. PATCH /api/ledger/:id
       if (ledgerGetMatch && method === 'PATCH') {
         const body = await request.json() as any;
         const ledger = new LedgerService(env.DB);
@@ -262,7 +286,7 @@ export default {
         return json({ entries: result.results }, 200, origin);
       }
 
-      // 16-27. Extended routes (reconcile, tax, AP, export, refund, split, runs)
+      // 16-27. Extended routes
       const extended = await handleExtended(request, env as any, origin);
       if (extended) return extended;
 
