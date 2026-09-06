@@ -1,10 +1,19 @@
 /**
  * ProcessingPage.tsx - FME Mission 001 - Snap It & Forget It
  *
- * Sequential document processing. One row per uploaded image.
- * Each image may yield 1-N detected documents (multi-doc support).
- * ALL results from ALL images collected and passed to ReviewPage.
- * Counts are derived from actual results, never from stale state.
+ * BUG E PHASE 2A FIX:
+ * Previously, when processDocumentRaw() threw on HTTP 422, ProcessingPage
+ * caught the error and fabricated a FAILED ScanResult with documentId=''.
+ * This destroyed the server-assigned documentId needed for every later
+ * recovery action (Skip persistence, Enter Manually, Retake).
+ *
+ * Fix: processDocumentRaw() now returns the full server envelope on 422
+ * (see api.ts scanRequestRaw). The results[] array contains the real
+ * documentId from the server. ProcessingPage preserves it exactly.
+ *
+ * A fabricated blank-ID result is still created ONLY for genuine
+ * transport/client failures where no server envelope exists (network down,
+ * JSON parse error, etc.).
  */
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -67,7 +76,9 @@ export default function ProcessingPage() {
       ));
 
       try {
-        // processDocumentRaw returns the full envelope: { results[], detectedCount }
+        // processDocumentRaw now returns the server envelope on both
+        // HTTP 200 (success) and HTTP 422 (extraction failed).
+        // results[] contains real server-assigned documentIds in both cases.
         const raw = await scanApi.processDocumentRaw({
           runId:       rId,
           sequence:    i + 1,
@@ -78,8 +89,10 @@ export default function ProcessingPage() {
 
         const imageResults  = raw.results ?? [];
         const detected      = raw.detectedCount ?? imageResults.length;
-        const allFailed     = imageResults.length > 0 && imageResults.every(r => r.status === 'FAILED');
+        const allFailed     = imageResults.length > 0 &&
+                              imageResults.every(r => r.status === 'FAILED');
 
+        // Preserve server results exactly — documentIds intact
         collected.push(...imageResults);
 
         setRows(prev => prev.map((r, idx) =>
@@ -92,16 +105,23 @@ export default function ProcessingPage() {
         ));
 
       } catch (err: any) {
+        // Genuine transport failure — no server envelope available.
+        // Only here do we fabricate a blank-ID FAILED result.
         const failResult: ScanResult = {
           documentId: '', extractionId: '', ledgerEntryId: '',
           journalEntryId: '', refNumber: '', lineCount: 0,
           itcFlags: [], status: 'FAILED',
-          error: err.message ?? 'Processing failed',
+          error: err.message ?? 'Network or processing error',
           extraction: {} as any,
         };
         collected.push(failResult);
         setRows(prev => prev.map((r, idx) =>
-          idx === i ? { ...r, status: 'FAILED', results: [failResult], error: err.message } : r
+          idx === i ? {
+            ...r,
+            status: 'FAILED',
+            results: [failResult],
+            error: err.message,
+          } : r
         ));
       }
     }
@@ -112,7 +132,6 @@ export default function ProcessingPage() {
     setAllDone(true);
   }
 
-  // Counts derived from collected results — never from stale image-row state
   const totalExtracted = allResults.length;
   const successCount   = allResults.filter(r => r.status === 'DONE').length;
   const failedCount    = allResults.filter(r => r.status === 'FAILED').length;
@@ -122,7 +141,11 @@ export default function ProcessingPage() {
       <div className="fme-mark">FME</div>
 
       <h1 style={{ marginTop: 32, marginBottom: 8, color: 'var(--cream)', fontSize: 26 }}>
-        {allDone ? 'Done!' : documents.length === 1 ? 'Reading document…' : `Reading ${documents.length} documents…`}
+        {allDone
+          ? 'Done!'
+          : documents.length === 1
+            ? 'Reading document…'
+            : `Reading ${documents.length} documents…`}
       </h1>
 
       {allDone && totalExtracted > 0 && (
@@ -165,7 +188,9 @@ export default function ProcessingPage() {
         <button
           className="btn-primary"
           style={{ marginTop: 24, width: '100%' }}
-          onClick={() => navigate('/results', { state: { results: allResults, runId: runIdRef.current } })}
+          onClick={() => navigate('/results', {
+            state: { results: allResults, runId: runIdRef.current },
+          })}
         >
           Review {successCount} document{successCount !== 1 ? 's' : ''} →
         </button>
