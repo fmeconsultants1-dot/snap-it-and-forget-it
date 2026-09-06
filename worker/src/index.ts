@@ -1,13 +1,15 @@
 /**
  * index.ts - FME Mission 001 - Snap It & Forget It
  *
- * DIAGNOSTIC: POST /api/diagnostic/date-test
- * Exact-text-only date read. No normalization. Character order preserved.
- * NO D1 WRITES. NO LEDGER CHANGES.
+ * DIAGNOSTIC ENDPOINTS:
+ * POST /api/diagnostic/extract-test  — runs production GeminiAdapter.extractDocuments()
+ *   on the R2 source image for a ledger entry. NO D1 WRITES.
+ * POST /api/diagnostic/date-test     — exact-text date read (legacy, kept)
  */
 import { ScanService, Env } from './services/ScanService';
 import { LedgerService } from './services/LedgerService';
 import { WatchdogService } from './services/WatchdogService';
+import { GeminiAdapter } from './adapters/GeminiAdapter';
 import { handleExtended } from './routes/extended';
 
 function cors(origin: string) {
@@ -49,71 +51,6 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     result += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(result);
-}
-
-/**
- * Exact-text date prompt.
- * - Copy characters left-to-right as printed. No reordering. No normalization.
- * - For multi-document images: focus only on the receipt for the named vendor.
- * - Return raw character groups only.
- */
-function buildExactTextPrompt(vendorHint: string): string {
-  return `You are reading a physical receipt or document. Your ONLY task is to find the transaction date and copy its printed characters EXACTLY as they appear, left to right, without reordering or interpreting.
-
-${vendorHint ? `Focus on the receipt/document from: ${vendorHint}. If multiple documents are visible, ignore all others.` : ''}
-
-Return ONLY this JSON object:
-{
-  "exact_date_text": "<characters exactly as printed, e.g. 13/08/26 or 2026-08-13>",
-  "character_groups": ["<group1>", "<group2>", "<group3>"],
-  "separator": "</ or - or space or other>",
-  "location_description": "<where on the document, e.g. top right, near total>",
-  "confidence": <0.0-1.0>
-}
-
-RULES:
-1. Copy printed characters LEFT TO RIGHT in the exact order they appear on the paper.
-2. Do NOT reorder the groups.
-3. Do NOT convert to YYYY-MM-DD.
-4. Do NOT interpret what the date means.
-5. If you cannot find a date, return exact_date_text: null.
-6. character_groups must contain the individual numeric groups as printed.
-
-Return ONLY the JSON. No markdown. No explanation.`;
-}
-
-async function runExactTextTest(imageBase64: string, mimeType: string, apiKey: string, vendorHint: string): Promise<any> {
-  const model  = 'gemini-3.5-flash';
-  const url    = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const prompt = buildExactTextPrompt(vendorHint);
-  const body   = {
-    contents: [{ parts: [
-      { text: prompt },
-      { inline_data: { mime_type: mimeType, data: imageBase64 } },
-    ]}],
-    generationConfig: { temperature: 0.0, maxOutputTokens: 256 },
-  };
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const e = await res.text();
-    return { error: `Gemini ${res.status}: ${e.slice(0, 200)}` };
-  }
-  const data = await res.json() as any;
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-  if (!text) return { error: 'no text', finish: data?.candidates?.[0]?.finishReason };
-  // Extract JSON
-  let parsed: any;
-  try { parsed = JSON.parse(text); }
-  catch {
-    const match = text.match(/\{[\s\S]+?\}/);
-    if (match) { try { parsed = JSON.parse(match[0]); } catch { return { error: 'parse fail', raw: text.slice(0, 300) }; } }
-    else { return { error: 'no JSON', raw: text.slice(0, 300) }; }
-  }
-  return parsed;
 }
 
 export default {
@@ -193,20 +130,17 @@ export default {
           offset: Number(url.searchParams.get('offset') ?? 0),
         };
         const ledger = new LedgerService(env.DB);
-        const entries = await ledger.getLedgerEntries(filter);
-        const runningTotal = await ledger.getRunningTotal(filter);
-        return json({ entries, runningTotal }, 200, origin);
+        return json({ entries: await ledger.getLedgerEntries(filter), runningTotal: await ledger.getRunningTotal(filter) }, 200, origin);
       }
       if (path === '/api/ledger/journal' && method === 'GET') {
-        const entries = await new LedgerService(env.DB).getJournalEntries({
+        return json({ entries: await new LedgerService(env.DB).getJournalEntries({
           runId: url.searchParams.get('runId') ?? undefined,
           dateFilter: url.searchParams.get('dateFilter') ?? undefined,
           entryType: url.searchParams.get('entryType') ?? undefined,
           status: url.searchParams.get('status') ?? undefined,
           dateFrom: url.searchParams.get('dateFrom') ?? undefined,
           dateTo: url.searchParams.get('dateTo') ?? undefined,
-        });
-        return json({ entries }, 200, origin);
+        }) }, 200, origin);
       }
       const ledgerGetMatch = path.match(/^\/api\/ledger\/([^/]+)$/);
       if (ledgerGetMatch && method === 'GET') {
@@ -226,9 +160,7 @@ export default {
       }
       const sourceMatch = path.match(/^\/api\/ledger\/([^/]+)\/source$/);
       if (sourceMatch && method === 'GET') {
-        const row = await env.DB.prepare(
-          'SELECT d.r2_key FROM ledger_entries le JOIN documents d ON le.document_id=d.id WHERE le.id=?'
-        ).bind(sourceMatch[1]!).first() as any;
+        const row = await env.DB.prepare('SELECT d.r2_key FROM ledger_entries le JOIN documents d ON le.document_id=d.id WHERE le.id=?').bind(sourceMatch[1]!).first() as any;
         if (!row?.r2_key) return err('Source not found', 404, origin);
         const obj = await env.DOCUMENTS.get(row.r2_key);
         if (!obj) return err('Not in storage', 404, origin);
@@ -265,13 +197,13 @@ export default {
         return json({ extraction_id: row.id, extraction_date: row.date, raw_fields_date: rawFields.date ?? null, gemini_model: row.gemini_model, extracted_at: row.extracted_at }, 200, origin);
       }
 
-      // DIAGNOSTIC: POST /api/diagnostic/date-test
-      // Exact-text-only date read. vendor_hint targets specific receipt in multi-doc image.
-      // NO D1 WRITES. NO LEDGER CHANGES.
-      if (path === '/api/diagnostic/date-test' && method === 'POST') {
-        const body       = await request.json() as any;
-        const entryId    = body.ledgerEntryId as string;
-        const vendorHint = (body.vendorHint as string) ?? '';
+      // DIAGNOSTIC: POST /api/diagnostic/extract-test
+      // Runs the PRODUCTION GeminiAdapter.extractDocuments() on a stored R2 image.
+      // Returns the full ExtractionResult array. NO D1 WRITES. NO LEDGER CHANGES.
+      // Use this to verify prompt changes before writing to D1.
+      if (path === '/api/diagnostic/extract-test' && method === 'POST') {
+        const body    = await request.json() as any;
+        const entryId = body.ledgerEntryId as string;
         if (!entryId)            return err('ledgerEntryId required', 400, origin);
         if (!env.GEMINI_API_KEY) return err('GEMINI_API_KEY not configured', 500, origin);
 
@@ -286,15 +218,26 @@ export default {
         const blob     = await obj.arrayBuffer();
         const mimeType = row.mime_type ?? obj.httpMetadata?.contentType ?? 'image/jpeg';
         const b64      = arrayBufferToBase64(blob);
-        const result   = await runExactTextTest(b64, mimeType, env.GEMINI_API_KEY, vendorHint || row.entity);
+
+        // Run the EXACT same adapter the production pipeline uses — no D1 writes
+        const adapter = new GeminiAdapter(env.GEMINI_API_KEY);
+        const results = await adapter.extractDocuments(b64, mimeType);
 
         return json({
           ledger_entry_id: entryId,
           entity:          row.entity,
           entry_type:      row.entry_type,
           r2_key:          row.r2_key,
-          vendor_hint:     vendorHint || row.entity,
-          result,
+          results: results.map(r => ({
+            doc_type:          r.doc_type,
+            vendor:            r.vendor,
+            date:              r.date,
+            total:             r.total,
+            confidence_vendor: r.confidence_vendor,
+            confidence_date:   r.confidence_date,
+            confidence_total:  r.confidence_total,
+            raw_date:          (r.raw_fields as any)?.date ?? null,
+          })),
         }, 200, origin);
       }
 
