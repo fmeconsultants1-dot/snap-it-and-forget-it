@@ -1,20 +1,8 @@
 /**
  * api.ts - Snap It & Forget It API client - FME Mission 001
  *
- * BUG E PHASE 2A FIX:
- * processDocumentRaw() previously used the generic request() which throws
- * on any non-2xx status. A 422 (extraction failed) caused the entire
- * server response to be discarded, so ProcessingPage fabricated a FAILED
- * result with documentId='' — destroying the server identity needed for
- * every later recovery action (Skip, Enter Manually, Retake).
- *
- * Fix: scanRequestRaw() is a specialized fetch for /api/scan/document.
- *   HTTP 200 + valid body   -> return normally
- *   HTTP 422 + valid body   -> ALSO return (extraction failed but ID preserved)
- *   Network/JSON/other err  -> throw
- *
- * Only processDocumentRaw() uses scanRequestRaw().
- * The generic request() is unchanged and still throws on all non-2xx.
+ * BUG E PHASE 2A FIX: processDocumentRaw accepts 422 with valid results[]
+ * BUG E PHASE 2B: documentApi.manual() added
  */
 const API_URL = import.meta.env.VITE_API_URL ?? '';
 
@@ -33,30 +21,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 /**
  * Specialized fetch for POST /api/scan/document.
- * Accepts both HTTP 200 (success) and HTTP 422 (extraction failed)
- * as long as the response body contains a valid ProcessDocumentResponse
- * with a results[] array. This preserves the server-assigned documentId
- * on failure so recovery actions can reference the original R2 object.
- * All other errors (network, malformed JSON, non-200/422) still throw.
+ * Accepts HTTP 200 and HTTP 422 when the body contains a valid results[] array.
+ * Preserves server-assigned documentId on extraction failure.
  */
 async function scanRequestRaw(path: string, options: RequestInit): Promise<ProcessDocumentResponse> {
-  const res = await fetch(`${API_URL}${path}`, {
+  const res  = await fetch(`${API_URL}${path}`, {
     ...options,
     headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
   });
-
-  // Parse body regardless of status
   const body = await res.json().catch(() => null) as ProcessDocumentResponse | null;
-
-  // Accept 200 or 422 if the body looks like a valid scan envelope
   if ((res.status === 200 || res.status === 422) && body && Array.isArray(body.results)) {
     return body;
   }
-
-  // All other cases: throw with best available message
-  const errMsg = (body as any)?.error
-    || (body as any)?.results?.[0]?.error
-    || `HTTP ${res.status}`;
+  const errMsg = (body as any)?.error || (body as any)?.results?.[0]?.error || `HTTP ${res.status}`;
   throw new Error(errMsg);
 }
 
@@ -97,6 +74,19 @@ export interface ScanResult {
 export interface ProcessDocumentResponse {
   results: ScanResult[];
   detectedCount: number;
+}
+
+export interface ManualRecoveryResponse {
+  success: boolean;
+  idempotent: boolean;
+  documentId: string;
+  extractionId: string;
+  ledgerEntryId: string;
+  journalEntryId: string;
+  refNumber: string;
+  status: string;
+  isBalanced: boolean;
+  itcFlags: string[];
 }
 
 export interface LedgerEntry {
@@ -159,47 +149,42 @@ export interface ReviewCorrections {
 
 export const scanApi = {
   createRun: (documentCount: number) =>
-    request<{ runId: string }>('/api/scan/run', {
-      method: 'POST',
-      body: JSON.stringify({ documentCount }),
-    }),
+    request<{ runId: string }>('/api/scan/run', { method: 'POST', body: JSON.stringify({ documentCount }) }),
 
   processDocument: async (params: {
-    runId: string; sequence: number; imageBase64: string;
-    mimeType: string; fileName?: string;
+    runId: string; sequence: number; imageBase64: string; mimeType: string; fileName?: string;
   }): Promise<ScanResult> => {
     const raw = await scanApi.processDocumentRaw(params);
     const first = raw.results[0];
     if (!first) {
-      return {
-        documentId: '', extractionId: '', ledgerEntryId: '',
-        journalEntryId: '', refNumber: '', lineCount: 0,
-        itcFlags: [], status: 'FAILED' as const,
-        error: 'No results returned from server',
-        extraction: {} as ExtractionData,
-      };
+      return { documentId: '', extractionId: '', ledgerEntryId: '', journalEntryId: '',
+        refNumber: '', lineCount: 0, itcFlags: [], status: 'FAILED' as const,
+        error: 'No results returned from server', extraction: {} as ExtractionData };
     }
     return first;
   },
 
-  /**
-   * processDocumentRaw — returns full server envelope.
-   * Uses scanRequestRaw so 422 with valid results[] is NOT thrown.
-   * Server documentId is preserved on failure.
-   */
   processDocumentRaw: (params: {
-    runId: string; sequence: number; imageBase64: string;
-    mimeType: string; fileName?: string;
+    runId: string; sequence: number; imageBase64: string; mimeType: string; fileName?: string;
   }): Promise<ProcessDocumentResponse> =>
-    scanRequestRaw('/api/scan/document', {
-      method: 'POST',
-      body: JSON.stringify(params),
-    }),
+    scanRequestRaw('/api/scan/document', { method: 'POST', body: JSON.stringify(params) }),
 
-  finalizeRun: (runId: string) =>
-    request<any>(`/api/scan/run/${runId}/finalize`, { method: 'POST' }),
-  getRun: (runId: string) =>
-    request<any>(`/api/scan/run/${runId}`),
+  finalizeRun: (runId: string) => request<any>(`/api/scan/run/${runId}/finalize`, { method: 'POST' }),
+  getRun:      (runId: string) => request<any>(`/api/scan/run/${runId}`),
+};
+
+export const documentApi = {
+  /**
+   * Manual recovery for a failed extraction.
+   * POST /api/documents/:documentId/manual
+   * Returns ManualRecoveryResponse.
+   * Throws on 409 (conflict) or 422 (validation failure).
+   */
+  manual: (documentId: string, corrections: ReviewCorrections): Promise<ManualRecoveryResponse> =>
+    request<ManualRecoveryResponse>(
+      `/api/documents/${documentId}/manual`,
+      { method: 'POST', body: JSON.stringify(corrections) }
+    ),
 };
 
 export const ledgerApi = {
