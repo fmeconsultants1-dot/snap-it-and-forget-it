@@ -1,12 +1,12 @@
 /**
  * index.ts - FME Mission 001 - Snap It & Forget It
  *
- * DIAGNOSTIC ENDPOINTS:
- * POST /api/diagnostic/extract-test  — runs production GeminiAdapter.extractDocuments()
- *   on the R2 source image for a ledger entry. NO D1 WRITES.
- * POST /api/diagnostic/date-test     — exact-text date read (legacy, kept)
+ * BUG E PHASE 2B:
+ * Added POST /api/documents/:documentId/manual
+ * Delegates entirely to ScanService.manualRecover().
+ * Returns 409 on conflict, 422 on validation failure.
  */
-import { ScanService, Env } from './services/ScanService';
+import { ScanService, Env, ManualConflictError } from './services/ScanService';
 import { LedgerService } from './services/LedgerService';
 import { WatchdogService } from './services/WatchdogService';
 import { GeminiAdapter } from './adapters/GeminiAdapter';
@@ -118,6 +118,22 @@ export default {
         if (!run) return err('Run not found', 404, origin);
         return json(run, 200, origin);
       }
+
+      // POST /api/documents/:documentId/manual  — Bug E Phase 2B
+      const manualMatch = path.match(/^\/api\/documents\/([^/]+)\/manual$/);
+      if (manualMatch && method === 'POST') {
+        const documentId = manualMatch[1]!;
+        const body = await request.json() as any;
+        try {
+          const result = await new ScanService(env).manualRecover(documentId, body);
+          return json(result, 200, origin);
+        } catch (e: any) {
+          if (e instanceof ManualConflictError) return err(e.message, 409, origin);
+          // Validation failures from updateAndApprove return their message as thrown Error
+          return err(e.message ?? 'Manual recovery failed', 422, origin);
+        }
+      }
+
       if (path === '/api/ledger' && method === 'GET') {
         const filter = {
           runId: url.searchParams.get('runId') ?? undefined,
@@ -196,48 +212,22 @@ export default {
         try { rawFields = JSON.parse(row.raw_fields ?? '{}'); } catch {}
         return json({ extraction_id: row.id, extraction_date: row.date, raw_fields_date: rawFields.date ?? null, gemini_model: row.gemini_model, extracted_at: row.extracted_at }, 200, origin);
       }
-
       // DIAGNOSTIC: POST /api/diagnostic/extract-test
-      // Runs the PRODUCTION GeminiAdapter.extractDocuments() on a stored R2 image.
-      // Returns the full ExtractionResult array. NO D1 WRITES. NO LEDGER CHANGES.
-      // Use this to verify prompt changes before writing to D1.
       if (path === '/api/diagnostic/extract-test' && method === 'POST') {
         const body    = await request.json() as any;
         const entryId = body.ledgerEntryId as string;
-        if (!entryId)            return err('ledgerEntryId required', 400, origin);
-        if (!env.GEMINI_API_KEY) return err('GEMINI_API_KEY not configured', 500, origin);
-
-        const row = await env.DB.prepare(
-          'SELECT d.r2_key, d.mime_type, le.entity, le.entry_type FROM ledger_entries le JOIN documents d ON le.document_id=d.id WHERE le.id=?'
-        ).bind(entryId).first() as any;
+        if (!entryId || !env.GEMINI_API_KEY) return err('ledgerEntryId and GEMINI_API_KEY required', 400, origin);
+        const row = await env.DB.prepare('SELECT d.r2_key, d.mime_type, le.entity, le.entry_type FROM ledger_entries le JOIN documents d ON le.document_id=d.id WHERE le.id=?').bind(entryId).first() as any;
         if (!row?.r2_key) return err('Source document not found', 404, origin);
-
         const obj = await env.DOCUMENTS.get(row.r2_key);
-        if (!obj)         return err('Document not in R2', 404, origin);
-
-        const blob     = await obj.arrayBuffer();
-        const mimeType = row.mime_type ?? obj.httpMetadata?.contentType ?? 'image/jpeg';
-        const b64      = arrayBufferToBase64(blob);
-
-        // Run the EXACT same adapter the production pipeline uses — no D1 writes
+        if (!obj) return err('Document not in R2', 404, origin);
+        const blob = await obj.arrayBuffer();
+        const b64  = arrayBufferToBase64(blob);
         const adapter = new GeminiAdapter(env.GEMINI_API_KEY);
-        const results = await adapter.extractDocuments(b64, mimeType);
-
+        const results = await adapter.extractDocuments(b64, row.mime_type ?? obj.httpMetadata?.contentType ?? 'image/jpeg');
         return json({
-          ledger_entry_id: entryId,
-          entity:          row.entity,
-          entry_type:      row.entry_type,
-          r2_key:          row.r2_key,
-          results: results.map(r => ({
-            doc_type:          r.doc_type,
-            vendor:            r.vendor,
-            date:              r.date,
-            total:             r.total,
-            confidence_vendor: r.confidence_vendor,
-            confidence_date:   r.confidence_date,
-            confidence_total:  r.confidence_total,
-            raw_date:          (r.raw_fields as any)?.date ?? null,
-          })),
+          ledger_entry_id: entryId, entity: row.entity, entry_type: row.entry_type, r2_key: row.r2_key,
+          results: results.map(r => ({ doc_type: r.doc_type, vendor: r.vendor, date: r.date, total: r.total, confidence_vendor: r.confidence_vendor, confidence_date: r.confidence_date, confidence_total: r.confidence_total, raw_date: (r.raw_fields as any)?.date ?? null })),
         }, 200, origin);
       }
 
