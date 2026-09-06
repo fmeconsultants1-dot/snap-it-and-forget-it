@@ -4,10 +4,11 @@
  * DIAGNOSTIC ENDPOINT (2026-09-06):
  * POST /api/diagnostic/date-test
  * Body: { ledgerEntryId: string, runs: number }
- * Reads the source document from R2 via the ledger entry's document_id,
- * sends it to Gemini with a focused date-only prompt (no D1 writes),
- * returns raw printed_date_text, year_digits, normalized_date, confidence.
- * Runs the extraction `runs` times (1-3) for consistency testing.
+ * Reads source document from R2, sends focused date-only Gemini prompt.
+ * NO D1 WRITES. NO LEDGER CHANGES. Read-only diagnostic only.
+ *
+ * FIX: chunked base64 encoding replaces btoa(String.fromCharCode(...array))
+ * which caused Maximum call stack size exceeded on images > ~1MB.
  */
 import { ScanService, Env } from './services/ScanService';
 import { LedgerService } from './services/LedgerService';
@@ -44,6 +45,17 @@ const MIME_TYPES: Record<string, string> = {
 function getContentType(path: string): string {
   const ext = path.substring(path.lastIndexOf('.')).toLowerCase();
   return MIME_TYPES[ext] ?? 'application/octet-stream';
+}
+
+/** Chunked base64 — safe on large images (no spread into function args) */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes  = new Uint8Array(buffer);
+  const chunk  = 8192;
+  let   result = '';
+  for (let i = 0; i < bytes.length; i += chunk) {
+    result += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(result);
 }
 
 const DATE_TEST_PROMPT = `You are a date-reading specialist. Your ONLY job is to read the date printed on this document.
@@ -262,32 +274,30 @@ export default {
       }
 
       // DIAGNOSTIC: POST /api/diagnostic/date-test
-      // Reads R2 source image for a ledger entry and runs focused Gemini date extraction.
-      // NO D1 WRITES. NO LEDGER CHANGES. Read-only diagnostic.
+      // Focused Gemini date-only read on stored R2 source image.
+      // NO D1 WRITES. NO LEDGER CHANGES.
       if (path === '/api/diagnostic/date-test' && method === 'POST') {
-        const body      = await request.json() as any;
-        const entryId   = body.ledgerEntryId as string;
-        const runs      = Math.min(Math.max(Number(body.runs ?? 1), 1), 3);
-        const model     = 'gemini-3.5-flash';
+        const body    = await request.json() as any;
+        const entryId = body.ledgerEntryId as string;
+        const runs    = Math.min(Math.max(Number(body.runs ?? 1), 1), 3);
+        const model   = 'gemini-3.5-flash';
 
         if (!entryId) return err('ledgerEntryId required', 400, origin);
         if (!env.GEMINI_API_KEY) return err('GEMINI_API_KEY not configured', 500, origin);
 
-        // Get the R2 key from D1 (read-only)
         const row = await env.DB.prepare(
           'SELECT d.r2_key, d.mime_type, le.entity, le.entry_type FROM ledger_entries le JOIN documents d ON le.document_id=d.id WHERE le.id=?'
         ).bind(entryId).first() as any;
         if (!row?.r2_key) return err('Source document not found for this ledger entry', 404, origin);
 
-        // Fetch from R2 (read-only)
         const obj = await env.DOCUMENTS.get(row.r2_key);
         if (!obj) return err('Document not in R2 storage', 404, origin);
 
-        const blob      = await obj.arrayBuffer();
-        const mimeType  = row.mime_type ?? obj.httpMetadata?.contentType ?? 'image/jpeg';
-        const b64       = btoa(String.fromCharCode(...new Uint8Array(blob)));
+        const blob     = await obj.arrayBuffer();
+        const mimeType = row.mime_type ?? obj.httpMetadata?.contentType ?? 'image/jpeg';
+        // Chunked base64 — safe on large images (no spread into function args)
+        const b64      = arrayBufferToBase64(blob);
 
-        // Run focused date test N times — NO writes
         const results: any[] = [];
         for (let i = 0; i < runs; i++) {
           const result = await runDateTest(b64, mimeType, env.GEMINI_API_KEY, model);
@@ -296,11 +306,11 @@ export default {
 
         return json({
           ledger_entry_id: entryId,
-          entity: row.entity,
-          entry_type: row.entry_type,
-          r2_key: row.r2_key,
+          entity:          row.entity,
+          entry_type:      row.entry_type,
+          r2_key:          row.r2_key,
           model,
-          runs: results,
+          runs:            results,
         }, 200, origin);
       }
 
