@@ -14,10 +14,18 @@
  *
  * ROLLBACK NOTE (2026-09-06):
  * The 2ee3268 numeric-date group-order disambiguation experiment was
- * rolled back because it produced materially unstable dates across runs
- * on the same receipt (e.g. 2026-08-20 / 2026-08-13 / 2026-08-10).
+ * rolled back because it produced materially unstable dates across runs.
  * Unstable plausible dates that pass validateDate() are worse than null.
- * This file is restored to the f83e6150 known-good-after-bugD baseline.
+ *
+ * DATE TRUST GATE (2026-09-06):
+ * validate() now applies a deterministic confidence gate after extraction.
+ * A date is only accepted when BOTH conditions hold:
+ *   1. validateDate() accepts the year range.
+ *   2. Gemini's own confidence_date >= MIN_TRUSTED_DATE_CONFIDENCE (0.90).
+ * If either condition fails: date = null, confidence_date = 0.
+ * This prevents low-confidence plausible dates (e.g. ADP 2026-07-31 @ 0.70)
+ * from reaching the ledger, and eliminates the misleading "Date 95%" display
+ * when the actual normalized date is null.
  *
  * Model history:
  *   gemini-1.5-flash  -> shut down
@@ -306,10 +314,27 @@ export class GeminiAdapter {
   private validate(raw: any): ExtractionResult {
     const validTypes = ['RECEIPT','INVOICE','DOCUMENT','STATEMENT'];
     const doc_type = validTypes.includes(raw.doc_type) ? raw.doc_type : 'DOCUMENT';
+
+    // DATE TRUST GATE
+    // A date is only accepted when BOTH:
+    //   1. validateDate() passes the year-range guard, AND
+    //   2. Gemini's own confidence_date >= MIN_TRUSTED_DATE_CONFIDENCE
+    // If either fails: date = null, confidence_date = 0.
+    // This eliminates:
+    //   - Misleading "Date 95%" display when date is null
+    //   - Low-confidence plausible dates (e.g. ADP 2026-07-31 @ 0.70)
+    const MIN_TRUSTED_DATE_CONFIDENCE = 0.90;
+    const rawDateConfidence = this.clampConfidence(raw.confidence_date);
+    const validatedDate     = this.validateDate(raw.date);
+    const trustedDate       = validatedDate !== null && rawDateConfidence >= MIN_TRUSTED_DATE_CONFIDENCE
+      ? validatedDate
+      : null;
+    const trustedDateConfidence = trustedDate !== null ? rawDateConfidence : 0;
+
     return {
       doc_type,
       vendor:              raw.vendor         ?? null,
-      date:                this.validateDate(raw.date),
+      date:                trustedDate,
       total:               typeof raw.total    === 'number' ? raw.total    : null,
       subtotal:            typeof raw.subtotal === 'number' ? raw.subtotal : null,
       tax:                 typeof raw.tax      === 'number' ? raw.tax      : null,
@@ -323,7 +348,7 @@ export class GeminiAdapter {
       line_items:          Array.isArray(raw.line_items) ? raw.line_items : [],
       raw_fields:          raw,
       confidence_vendor:   this.clampConfidence(raw.confidence_vendor),
-      confidence_date:     this.clampConfidence(raw.confidence_date),
+      confidence_date:     trustedDateConfidence,
       confidence_total:    this.clampConfidence(raw.confidence_total),
       confidence_category: this.clampConfidence(raw.confidence_category),
       gemini_model: this.model,
