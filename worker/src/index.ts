@@ -3,12 +3,14 @@
  *
  * DIAGNOSTIC ENDPOINT (2026-09-06):
  * POST /api/diagnostic/date-test
- * Body: { ledgerEntryId: string, runs: number }
+ * Body: { ledgerEntryId: string }
  * Reads source document from R2, sends focused date-only Gemini prompt.
- * NO D1 WRITES. NO LEDGER CHANGES. Read-only diagnostic only.
+ * NO D1 WRITES. NO LEDGER CHANGES. Read-only diagnostic.
  *
- * FIX: chunked base64 encoding replaces btoa(String.fromCharCode(...array))
- * which caused Maximum call stack size exceeded on images > ~1MB.
+ * FIXES:
+ * - removed responseMimeType:'application/json' (caused truncation)
+ * - uses text mode + regex JSON extraction like production adapter
+ * - runs=1 per request to avoid worker CPU timeout
  */
 import { ScanService, Env } from './services/ScanService';
 import { LedgerService } from './services/LedgerService';
@@ -47,7 +49,7 @@ function getContentType(path: string): string {
   return MIME_TYPES[ext] ?? 'application/octet-stream';
 }
 
-/** Chunked base64 — safe on large images (no spread into function args) */
+/** Chunked base64 — safe on large images */
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes  = new Uint8Array(buffer);
   const chunk  = 8192;
@@ -60,46 +62,65 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 
 const DATE_TEST_PROMPT = `You are a date-reading specialist. Your ONLY job is to read the date printed on this document.
 
-Return ONLY valid JSON matching this schema exactly:
+Return ONLY a JSON object:
 {
-  "printed_date_text": "<exact characters visible on document, e.g. 08/26/26 or Aug 26 2026 or null>",
-  "month": <1-12 or null if not readable>,
-  "day": <1-31 or null if not readable>,
-  "year_digits": "<exactly as printed, e.g. '26' or '2026' or null if not visible>",
-  "year_digit_count": <0, 2, or 4>,
-  "normalized_date": "<YYYY-MM-DD if you can determine it, else null>",
-  "year_confidence": <0.0-1.0>
+  "printed_date_text": "exact characters visible, e.g. 08/26/26",
+  "month": 8,
+  "day": 26,
+  "year_digits": "26",
+  "year_digit_count": 2,
+  "normalized_date": "2026-08-26",
+  "year_confidence": 0.95
 }
 
-CRITICAL RULES:
-1. Transcribe the EXACT date characters first. Do not skip this step.
-2. If a 4-digit year is clearly printed (e.g. 2026), use it exactly.
-3. If a 2-digit year is clearly printed (e.g. 26), expand as 20YY. So 26 -> 2026, 25 -> 2025.
-4. If the year digits are unclear or ambiguous, set year_digits to null and year_confidence below 0.5.
-5. Do NOT invent a year. Do NOT use 2013 or 2020 unless those exact digits are clearly printed.
-6. If no date is visible at all, return null for all fields.
+RULES:
+1. Transcribe the EXACT date characters first.
+2. 4-digit year clearly printed -> use exactly.
+3. 2-digit year clearly printed (e.g. 26) -> expand as 20YY -> 2026.
+4. Year digits unclear -> year_digits: null, year_confidence < 0.5.
+5. Do NOT guess 2013 or 2020 unless those exact 4 digits are printed.
+6. No date visible -> all fields null.
 
-Return ONLY the JSON object. No markdown. No explanation.`;
+Return ONLY the JSON. No markdown fences. No explanation.`;
 
-async function runDateTest(imageBase64: string, mimeType: string, apiKey: string, model: string): Promise<any> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const body = {
+async function runDateTest(imageBase64: string, mimeType: string, apiKey: string): Promise<any> {
+  const model = 'gemini-3.5-flash';
+  const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const body  = {
     contents: [{ parts: [
       { text: DATE_TEST_PROMPT },
       { inline_data: { mime_type: mimeType, data: imageBase64 } },
     ]}],
-    generationConfig: { temperature: 0.0, maxOutputTokens: 512, responseMimeType: 'application/json' },
+    // text mode — avoids JSON-mode truncation seen with responseMimeType:'application/json'
+    generationConfig: { temperature: 0.0, maxOutputTokens: 512 },
   };
-  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
   if (!res.ok) {
     const e = await res.text();
     return { error: `Gemini ${res.status}: ${e.slice(0, 200)}` };
   }
   const data = await res.json() as any;
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) return { error: 'no text in response' };
-  try { return JSON.parse(text); }
-  catch { return { error: 'invalid JSON', raw: text.slice(0, 200) }; }
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  if (!text) return { error: 'no text in response', finish: data?.candidates?.[0]?.finishReason };
+
+  // Extract JSON from text — same pattern as production GeminiAdapter
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    const match = text.match(/\{[\s\S]+\}/);
+    if (match) {
+      try { parsed = JSON.parse(match[0]); }
+      catch { return { error: 'could not parse JSON', raw_text: text.slice(0, 400) }; }
+    } else {
+      return { error: 'no JSON object found', raw_text: text.slice(0, 400) };
+    }
+  }
+  return parsed;
 }
 
 export default {
@@ -111,7 +132,6 @@ export default {
 
     if (method === 'OPTIONS') return new Response(null, { status: 204, headers: cors(origin) });
 
-    // Static file serving
     if (!path.startsWith('/api/') && path !== '/health' && path !== '/health/full' && path !== '/version') {
       let filePath = path === '/' ? '/index.html' : path;
       const obj = await env.DOCUMENTS.get(`frontend${filePath}`);
@@ -274,43 +294,32 @@ export default {
       }
 
       // DIAGNOSTIC: POST /api/diagnostic/date-test
-      // Focused Gemini date-only read on stored R2 source image.
-      // NO D1 WRITES. NO LEDGER CHANGES.
+      // One focused Gemini date read per call. NO D1 WRITES.
       if (path === '/api/diagnostic/date-test' && method === 'POST') {
         const body    = await request.json() as any;
         const entryId = body.ledgerEntryId as string;
-        const runs    = Math.min(Math.max(Number(body.runs ?? 1), 1), 3);
-        const model   = 'gemini-3.5-flash';
-
-        if (!entryId) return err('ledgerEntryId required', 400, origin);
+        if (!entryId)           return err('ledgerEntryId required', 400, origin);
         if (!env.GEMINI_API_KEY) return err('GEMINI_API_KEY not configured', 500, origin);
 
         const row = await env.DB.prepare(
           'SELECT d.r2_key, d.mime_type, le.entity, le.entry_type FROM ledger_entries le JOIN documents d ON le.document_id=d.id WHERE le.id=?'
         ).bind(entryId).first() as any;
-        if (!row?.r2_key) return err('Source document not found for this ledger entry', 404, origin);
+        if (!row?.r2_key) return err('Source document not found', 404, origin);
 
         const obj = await env.DOCUMENTS.get(row.r2_key);
-        if (!obj) return err('Document not in R2 storage', 404, origin);
+        if (!obj) return err('Document not in R2', 404, origin);
 
         const blob     = await obj.arrayBuffer();
         const mimeType = row.mime_type ?? obj.httpMetadata?.contentType ?? 'image/jpeg';
-        // Chunked base64 — safe on large images (no spread into function args)
         const b64      = arrayBufferToBase64(blob);
-
-        const results: any[] = [];
-        for (let i = 0; i < runs; i++) {
-          const result = await runDateTest(b64, mimeType, env.GEMINI_API_KEY, model);
-          results.push({ attempt: i + 1, ...result });
-        }
+        const result   = await runDateTest(b64, mimeType, env.GEMINI_API_KEY);
 
         return json({
           ledger_entry_id: entryId,
           entity:          row.entity,
           entry_type:      row.entry_type,
           r2_key:          row.r2_key,
-          model,
-          runs:            results,
+          result,
         }, 200, origin);
       }
 
