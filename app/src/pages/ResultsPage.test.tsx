@@ -90,15 +90,24 @@ it('prefills a valid 70% date and visibly asks the user to verify it', () => {
   expect(JSON.stringify(tree.toJSON())).toContain('Verify date');
 });
 
-it('shows a duplicate warning while leaving approval available', async () => {
-  mocked.duplicates.mockResolvedValue({ candidates: [{ id: 'other', ref_number: 'ABC123', sameDocument: true }] });
-  mocked.state.results = [success()]; mount();
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
-  expect(JSON.stringify(tree.toJSON())).toContain('Likely Duplicate');
-  expect(JSON.stringify(tree.toJSON())).toContain('Same source document');
-  await click('Approve & Save');
-  expect(mocked.approve).not.toHaveBeenCalled();
-  await click('Approve & Save');
-  expect(mocked.approve).toHaveBeenCalled();
-  expect(button('View Ledger')).toBeDefined();
+it('confirms deletion, removes only the selected unapproved item, and leaves other cards available', async () => {
+  const confirm = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
+  vi.stubGlobal('window', { confirm });
+  mocked.state.results = [success(), { ...success(), ledgerEntryId: 'second' }]; mount();
+  await click('Delete'); expect(mocked.skip).not.toHaveBeenCalled();
+  expect(tree.root.findAll(n => n.props.className === 'review-card')).toHaveLength(2);
+  await click('Delete'); expect(mocked.skip).toHaveBeenCalledWith('success', 'ledger');
+  expect(tree.root.findAll(n => n.props.className === 'review-card')).toHaveLength(1);
+  await click('Approve & Save'); expect(button('View Ledger')).toBeDefined();
+});
+it('does not offer Delete for an already-approved ledger record', () => {
+  mocked.state.results = [{ ...success(), approved: true }]; mount();
+  expect(button('Delete')).toBeUndefined();
+});
+it('retains the item and entered values when deletion fails', async () => {
+  vi.stubGlobal('window', { confirm: () => true });
+  mocked.skip.mockRejectedValueOnce(new Error('Offline'));
+  mocked.state.results = [success()]; mount(); await click('Delete');
+  expect(tree.root.findAll(n => n.props.className === 'review-card')).toHaveLength(1);
+  expect(tree.root.findAllByType('input').some(n => n.props.value === 'Shop')).toBe(true);
 });

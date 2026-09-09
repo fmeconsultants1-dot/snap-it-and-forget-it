@@ -148,10 +148,6 @@ export default {
         return json(await new LedgerService(env.DB).getReviewCorrections(reviewMatch[1]!), 200, origin);
       }
 
-      if (path === '/api/ledger/duplicates' && method === 'POST') {
-        const candidate = await request.json() as any;
-        return json({ candidates: await new LedgerService(env.DB).findLikelyDuplicates(candidate) }, 200, origin);
-      }
       if (path === '/api/ledger' && method === 'GET') {
         const filter = {
           runId: url.searchParams.get('runId') ?? undefined,

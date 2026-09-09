@@ -251,13 +251,13 @@ export default function LedgerPage() {
         const res = await ledgerApi.getEntries(params);
         if (currentRequest !== requestId.current) return;
         const seen = new Set<string>();
-        setLedgerEntries(res.entries.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true; }));
+        setLedgerEntries(res.entries.filter(e => { if (e.status === 'SKIPPED' || seen.has(e.id)) return false; seen.add(e.id); return true; }));
         setRunningTotal(res.runningTotal); // now filter-consistent
       } else {
         const res = await ledgerApi.getJournalEntries(params);
         if (currentRequest !== requestId.current) return;
         const seen = new Set<string>();
-        setJournalEntries(res.entries.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true; }));
+        setJournalEntries(res.entries.filter(e => { if (e.status === 'SKIPPED' || seen.has(e.id)) return false; seen.add(e.id); return true; }));
       }
     } catch (e) {
       if (currentRequest === requestId.current) {
@@ -273,6 +273,7 @@ export default function LedgerPage() {
     try {
       const corrections = await ledgerApi.getReview(entry.id);
       const result: ScanResult = {
+        approved: entry.status === 'APPROVED',
         documentId: entry.document_id, extractionId: entry.extraction_id,
         ledgerEntryId: entry.id, journalEntryId: '', refNumber: entry.ref_number,
         lineCount: 0, itcFlags: [], status: 'DONE',
