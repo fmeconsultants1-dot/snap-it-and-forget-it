@@ -313,7 +313,12 @@ export class ScanService {
 
       // Never downgrade a multi-document scan to a single-document extraction.
       // Adapter retries retain the multi-document prompt; failures remain recoverable.
-      const docsToProcess = await this.gemini.extractDocuments(params.imageBase64, params.mimeType);
+      let docsToProcess: ExtractionResult[];
+      try {
+        docsToProcess = await this.gemini.extractDocuments(params.imageBase64, params.mimeType);
+      } catch {
+        docsToProcess = await this.gemini.extractDocuments(params.imageBase64, params.mimeType);
+      }
       if (!docsToProcess.length) throw new Error('No documents detected. Retake or retry this image.');
 
       const results: Awaited<ReturnType<ScanService['processDocument']>>['results'] = [];
