@@ -311,18 +311,10 @@ export class ScanService {
       const imageBytes = Uint8Array.from(atob(params.imageBase64), c => c.charCodeAt(0));
       await this.r2.put(r2Key, imageBytes, { httpMetadata: { contentType: params.mimeType } });
 
-      let extractions: ExtractionResult[] = [];
-      try {
-        extractions = await this.gemini.extractDocuments(params.imageBase64, params.mimeType);
-      } catch (multiDocErr: any) {
-        console.warn(`[ScanService] Multi-doc detection failed (${multiDocErr.message}), falling back to single-document extraction`);
-        const single = await this.gemini.extractDocument(params.imageBase64, params.mimeType);
-        extractions = [single];
-      }
-
-      const docsToProcess = extractions.length > 0
-        ? extractions
-        : [await this.gemini.extractDocument(params.imageBase64, params.mimeType)];
+      // Never downgrade a multi-document scan to a single-document extraction.
+      // Adapter retries retain the multi-document prompt; failures remain recoverable.
+      const docsToProcess = await this.gemini.extractDocuments(params.imageBase64, params.mimeType);
+      if (!docsToProcess.length) throw new Error('No documents detected. Retake or retry this image.');
 
       const results: Awaited<ReturnType<ScanService['processDocument']>>['results'] = [];
       let totalAmount = 0;

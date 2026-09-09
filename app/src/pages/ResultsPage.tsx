@@ -115,7 +115,12 @@ export default function ResultsPage() {
   const [initial] = useState(() => {
     try {
       const saved = JSON.parse(sessionStorage.getItem(storageKey) ?? 'null');
-      if (saved && Array.isArray(saved.results) && saved.results.length === saved.edits?.length && saved.results.length === saved.statuses?.length) return saved;
+      const incoming: ScanResult[] = location.state?.results ?? [];
+      const includesIncoming = Array.isArray(saved?.results) && incoming.every((r, i) => {
+        const cached = saved.results[i];
+        return cached && cached.documentId === r.documentId && cached.extractionId === r.extractionId && cached.ledgerEntryId === r.ledgerEntryId;
+      });
+      if (includesIncoming && saved && Array.isArray(saved.results) && saved.results.length === saved.edits?.length && saved.results.length === saved.statuses?.length) return saved;
     } catch {}
     return null;
   });

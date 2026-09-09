@@ -1,0 +1,28 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { act, create } from 'react-test-renderer';
+import ProcessingPage from './ProcessingPage';
+import ResultsPage from './ResultsPage';
+import { docStore } from '../lib/docStore';
+const route = vi.hoisted(() => ({state:{} as any,navigate:vi.fn()}));
+vi.mock('react-router-dom',()=>({useNavigate:()=>route.navigate,useLocation:()=>({state:route.state})}));
+afterEach(()=>vi.unstubAllGlobals());
+it('one five-result HTTP response survives API client, ProcessingPage navigation, and all five Review cards despite stale one-result cache', async()=>{
+  const results=Array.from({length:5},(_,i)=>({documentId:'image',extractionId:`ex${i}`,ledgerEntryId:`le${i}`,status:'DONE',itcFlags:[],extraction:{doc_type:'RECEIPT',vendor:`Vendor ${i}`,date:'2026-09-08',total:10,confidence_date:0.95}}));
+  const envelope={results,detectedCount:5};
+  vi.stubGlobal('fetch',vi.fn(async(path:string)=>({ok:true,status:200,json:async()=>path.endsWith('/api/scan/run')?{runId:'run'}:path.endsWith('/api/scan/document')?envelope:{candidates:[]}})));
+  const cache = new Map([['snap-review:run',JSON.stringify({results:results.slice(0,1),edits:[{}],statuses:['idle']})]]);
+  vi.stubGlobal('sessionStorage',{getItem:(k:string)=>cache.get(k)??null,setItem:(k:string,v:string)=>cache.set(k,v)});
+  docStore.set([{dataUrl:'data:image/jpeg;base64,aA==',base64:'aA==',mimeType:'image/jpeg',fileName:'five.jpg'}]);
+  let page:any;
+  await act(async()=>{page=create(<ProcessingPage/>);});
+  expect(envelope.detectedCount).toBe(5);
+  expect(JSON.stringify(page.toJSON())).toContain('5');
+  const button=page.root.findAllByType('button').find((b:any)=>JSON.stringify(b.children).includes('Review'));
+  act(()=>button.props.onClick());
+  const state=route.navigate.mock.calls.find(c=>c[0]==='/results')![1].state;
+  expect(state.results).toHaveLength(5); expect(state.results).toEqual(results);
+  act(()=>page.unmount()); route.state=state;
+  await act(async()=>{page=create(<ResultsPage/>,{createNodeMock:()=>({scrollIntoView(){}})});});
+  expect(page.root.findAll((n:any)=>n.props.className==='review-card')).toHaveLength(5);
+  act(()=>page.unmount());
+});
