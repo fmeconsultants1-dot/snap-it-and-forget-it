@@ -3,12 +3,12 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import ResultsPage from './ResultsPage';
 
 const mocked = vi.hoisted(() => ({
-  state: {} as any, navigate: vi.fn(), manual: vi.fn(), skip: vi.fn(), approve: vi.fn(), scan: vi.fn(),
+  state: {} as any, navigate: vi.fn(), manual: vi.fn(), skip: vi.fn(), approve: vi.fn(), scan: vi.fn(), duplicates: vi.fn(),
 }));
 vi.mock('react-router-dom', () => ({ useLocation: () => ({ state: mocked.state }), useNavigate: () => mocked.navigate }));
 vi.mock('../lib/api', () => ({
   documentApi: { manual: mocked.manual, skip: mocked.skip },
-  ledgerApi: { updateAndApprove: mocked.approve }, scanApi: { processDocumentRaw: mocked.scan },
+  ledgerApi: { updateAndApprove: mocked.approve, duplicates: mocked.duplicates }, scanApi: { processDocumentRaw: mocked.scan },
 }));
 vi.mock('../lib/camera', () => ({ fileToCapture: async () => ({ base64: 'replacement', mimeType: 'image/jpeg', fileName: 'new.jpg' }) }));
 const failed = () => Object.freeze({ documentId: 'original', ledgerEntryId: '', status: 'FAILED', error: 'Unreadable', extraction: Object.freeze({}) });
@@ -24,6 +24,7 @@ beforeEach(() => {
   const store = new Map<string, string>();
   vi.stubGlobal('sessionStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) });
   mocked.state = { runId: 'run', results: [failed()] };
+  mocked.duplicates.mockResolvedValue({ candidates: [] });
   mocked.skip.mockResolvedValue({ success: true });
   mocked.manual.mockResolvedValue({ success: true, status: 'APPROVED' });
   mocked.approve.mockResolvedValue({ success: true });
@@ -79,4 +80,25 @@ describe('Bug E review completion', () => {
     expect(button('View Ledger')).toBeUndefined();
     await click('Approve & Save'); expect(button('View Ledger')).toBeDefined();
   });
+});
+
+it('prefills a valid 70% date and visibly asks the user to verify it', () => {
+  const result = success();
+  mocked.state.results = [{ ...result, extraction: { ...result.extraction, confidence_date: 0.70 } }];
+  mount();
+  expect(tree.root.findAllByType('input').find(n => n.props.type === 'date')?.props.value).toBe('2026-09-08');
+  expect(JSON.stringify(tree.toJSON())).toContain('Verify date');
+});
+
+it('shows a duplicate warning while leaving approval available', async () => {
+  mocked.duplicates.mockResolvedValue({ candidates: [{ id: 'other', ref_number: 'ABC123', sameDocument: true }] });
+  mocked.state.results = [success()]; mount();
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Likely Duplicate');
+  expect(JSON.stringify(tree.toJSON())).toContain('Same source document');
+  await click('Approve & Save');
+  expect(mocked.approve).not.toHaveBeenCalled();
+  await click('Approve & Save');
+  expect(mocked.approve).toHaveBeenCalled();
+  expect(button('View Ledger')).toBeDefined();
 });

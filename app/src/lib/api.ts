@@ -191,6 +191,8 @@ export const documentApi = {
 };
 
 export const ledgerApi = {
+  duplicates: (candidate: { vendor: string; date: string; total: number | null; ledgerEntryId?: string; documentId?: string }) =>
+    request<{ candidates: Array<{ id: string; ref_number: string; sameDocument: boolean }> }>('/api/ledger/duplicates', { method: 'POST', body: JSON.stringify(candidate) }),
   getReview: (id: string) => request<ReviewCorrections>(`/api/ledger/${id}/review`),
   getEntries: (params: {
     runId?: string; dateFilter?: string; entryType?: string; status?: string;

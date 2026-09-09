@@ -18,19 +18,7 @@
  * Unstable plausible dates that pass validateDate() are worse than null.
  *
  * DATE TRUST GATE (2026-09-06):
- * validate() now applies a deterministic confidence gate after extraction.
- * A date is only accepted when BOTH conditions hold:
- *   1. validateDate() accepts the year range.
- *   2. Gemini's own confidence_date >= MIN_TRUSTED_DATE_CONFIDENCE (0.90).
- * If either condition fails: date = null, confidence_date = 0.
- * This prevents low-confidence plausible dates (e.g. ADP 2026-07-31 @ 0.70)
- * from reaching the ledger, and eliminates the misleading "Date 95%" display
- * when the actual normalized date is null.
- *
- * Model history:
- *   gemini-1.5-flash  -> shut down
- *   gemini-2.0-flash  -> shut down June 1 2026
- *   gemini-3.5-flash  -> CURRENT (Sept 2026)
+ * Valid date candidates retain their confidence for explicit user verification.
  */
 
 export interface ExtractionResult {
@@ -315,21 +303,9 @@ export class GeminiAdapter {
     const validTypes = ['RECEIPT','INVOICE','DOCUMENT','STATEMENT'];
     const doc_type = validTypes.includes(raw.doc_type) ? raw.doc_type : 'DOCUMENT';
 
-    // DATE TRUST GATE
-    // A date is only accepted when BOTH:
-    //   1. validateDate() passes the year-range guard, AND
-    //   2. Gemini's own confidence_date >= MIN_TRUSTED_DATE_CONFIDENCE
-    // If either fails: date = null, confidence_date = 0.
-    // This eliminates:
-    //   - Misleading "Date 95%" display when date is null
-    //   - Low-confidence plausible dates (e.g. ADP 2026-07-31 @ 0.70)
-    const MIN_TRUSTED_DATE_CONFIDENCE = 0.90;
-    const rawDateConfidence = this.clampConfidence(raw.confidence_date);
-    const validatedDate     = this.validateDate(raw.date);
-    const trustedDate       = validatedDate !== null && rawDateConfidence >= MIN_TRUSTED_DATE_CONFIDENCE
-      ? validatedDate
-      : null;
-    const trustedDateConfidence = trustedDate !== null ? rawDateConfidence : 0;
+    // Valid dates are review candidates; confidence controls verification UI, not retention.
+    const trustedDate = this.validateDate(raw.date);
+    const trustedDateConfidence = trustedDate !== null ? this.clampConfidence(raw.confidence_date) : 0;
 
     return {
       doc_type,
@@ -361,6 +337,7 @@ export class GeminiAdapter {
     const year = parseInt(d.slice(0, 4), 10);
     const now   = new Date().getFullYear();
     if (year < now - 5 || year > now + 1) return null;
+    if (!Number.isFinite(Date.parse(d)) || new Date(d).toISOString().slice(0, 10) !== d) return null;
     return d;
   }
 

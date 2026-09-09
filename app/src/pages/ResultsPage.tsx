@@ -90,6 +90,23 @@ function validateEdit(edit: EditState): FieldErrors | null {
 
 type ApproveStatus = 'idle' | 'saving' | 'done' | 'error' | 'skipped' | 'manual';
 
+function DuplicateWarning({ edit, result }: { edit: EditState; result: ScanResult }) {
+  const [message, setMessage] = useState('');
+  useEffect(() => {
+    let active = true;
+    setMessage('');
+    if (!['RECEIPT', 'INVOICE'].includes(edit.doc_type)) return;
+    const timer = setTimeout(() => {
+      ledgerApi.duplicates({ vendor: edit.vendor, date: edit.date, total: edit.total === '' ? null : Number(edit.total),
+        ledgerEntryId: result.ledgerEntryId, documentId: result.documentId }).then(({ candidates }) => {
+        if (active && candidates.length) setMessage(`Likely Duplicate — matches ${candidates.map(c => '#' + c.ref_number).join(', ')}.${candidates.some(c => c.sameDocument) ? ' Same source document: stronger match.' : ''} Verify that this is a separate transaction. You may still approve it, or choose Skip.`);
+      }).catch(() => { if (active) setMessage('Duplicate check unavailable. Check the ledger before approving.'); });
+    }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [edit.vendor, edit.date, edit.total, edit.doc_type, result.ledgerEntryId, result.documentId]);
+  return message ? <p role="status" style={{ color: 'var(--gold)', padding: 12, border: '1px solid var(--gold)', borderRadius: 8 }}>{message}</p> : null;
+}
+
 export default function ResultsPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -114,6 +131,7 @@ export default function ResultsPage() {
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
   const finalActionRef = useRef<HTMLDivElement | null>(null);
   const savingRef = useRef(false);
+  const duplicateSeen = useRef<Record<number, string>>({});
   const [manualItems, setManualItems] = useState<number[]>(initial?.manualItems ?? []);
   const retakeInput = useRef<HTMLInputElement | null>(null);
   const retakeIndex = useRef<number | null>(null);
@@ -171,6 +189,15 @@ export default function ResultsPage() {
     };
 
     try {
+      if (['RECEIPT', 'INVOICE'].includes(edit.doc_type)) {
+        const signature = JSON.stringify([edit.vendor, edit.date, edit.total]);
+        const { candidates } = await ledgerApi.duplicates({ vendor: edit.vendor, date: edit.date, total: totalNum,
+          ledgerEntryId: result.ledgerEntryId, documentId: result.documentId });
+        if (candidates.length && duplicateSeen.current[idx] !== signature) {
+          duplicateSeen.current[idx] = signature;
+          throw new Error('Likely Duplicate — a stored record has the same vendor, date and total. If this is a separate transaction, tap Approve & Save again; otherwise choose Skip.');
+        }
+      }
       if (result.ledgerEntryId) {
         await ledgerApi.updateAndApprove(result.ledgerEntryId, corrections);
       } else {
@@ -352,6 +379,7 @@ export default function ResultsPage() {
             {showEditForm && (
               <div style={{ marginTop: 16 }}>
 
+                <DuplicateWarning edit={edit} result={result} />
                 {/* Confidence */}
                 {(() => {
                   const scores: [string, number | null][] = [
@@ -375,6 +403,7 @@ export default function ResultsPage() {
                   placeholder="Vendor or issuer name" />
 
                 <label className="review-label">Date {fe?.date && <span style={{ color:'var(--red)', marginLeft:4 }}>← {fe.date}</span>}</label>
+                {ex?.date && ex.confidence_date < 0.90 && <p style={{ color:'var(--gold)', fontSize:13 }} role="status">Verify date — low confidence ({Math.round(ex.confidence_date * 100)}%). Compare the prefilled date with the original document.</p>}
                 <input className="review-input" type="date" value={edit.date}
                   style={{ borderColor: fe?.date ? 'var(--red)' : undefined }}
                   onChange={e => updateField(idx, 'date', e.target.value)} />

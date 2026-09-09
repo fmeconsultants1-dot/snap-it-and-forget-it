@@ -41,3 +41,11 @@
 - First main deployment run `34295254808` passed validation but failed at schema verification before deployment. Corrected its Wrangler invocation from the bulk-import `--file` path to the SELECT-only `--command` query path. Exact original failure logs require GitHub sign-in; this correction does not claim the original error cause is confirmed.
 
 Local tests do not replace the physical-phone acceptance gate. After deployment, photograph a real receipt, approve it, reopen/edit it, view its original, and confirm corrected values in the filtered CSV. Also verify mixed failed/successful images, manual recovery and final-item skip on the production URL.
+
+## P0 follow-up: dates and likely duplicates
+
+Valid extracted dates retain their original confidence even below 90%; malformed, impossible and out-of-range dates remain null. Review prefills the date and visibly requests verification below 90%. Required-date approval rules, Gemini prompts and model are unchanged.
+
+Duplicate checks compare normalized vendor/entity, business date and integer cents against existing receipt/invoice records, excluding the current record and skipped records. Matching document identity strengthens the visible warning. Approval rechecks immediately before saving; after seeing the warning the user may explicitly approve again or skip. No records are automatically deleted, merged, suppressed or rejected, and originals remain untouched.
+
+Validation: 176 worker tests and 8 frontend tests pass; worker TypeScript and frontend TypeScript/production build pass. Tests cover 95%/70% valid dates, malformed/out-of-range/impossible dates, required versus optional dates, duplicate matching/nonmatching, source identity and legitimate approval after warning.

@@ -482,6 +482,16 @@ export class LedgerService {
     return entries;
   }
 
+  async findLikelyDuplicates(candidate: { vendor?: string | null; date?: string | null; total?: number | null; ledgerEntryId?: string; documentId?: string }) {
+    if (!candidate.vendor?.trim() || !candidate.date || typeof candidate.total !== 'number' || !Number.isFinite(candidate.total)) return [];
+    const rows = await this.db.prepare(`SELECT id, entity, date, amount, document_id, ref_number, status
+      FROM ledger_entries WHERE lower(trim(entity))=lower(trim(?)) AND date=?
+      AND CAST(ROUND(amount*100) AS INTEGER)=? AND id != ?
+      AND entry_type IN ('RECEIPT','INVOICE') AND status != 'SKIPPED'
+      ORDER BY created_at DESC LIMIT 10`).bind(candidate.vendor, candidate.date, toCents(candidate.total), candidate.ledgerEntryId ?? '').all();
+    return rows.results.map((row: any) => ({ ...row, sameDocument: !!candidate.documentId && row.document_id === candidate.documentId }));
+  }
+
   async getReviewCorrections(id: string): Promise<ReviewCorrections> {
     const row = await this.db.prepare(`SELECT le.*, ex.category, ex.subtotal, ex.tax,
       ex.tax_gst, ex.tax_hst, ex.tax_pst, ex.payment_method, ex.description
