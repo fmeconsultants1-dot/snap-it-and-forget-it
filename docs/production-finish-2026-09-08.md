@@ -38,5 +38,6 @@
 - Production verification script syntax and diff whitespace checks passed.
 - Remote `main` remained at `7ff98c2` immediately before release; the finish branch contains that commit, allowing a normal fast-forward push.
 - Deployment and physical-phone acceptance are separate gates. Check the release Actions run and deployed SHA before declaring readiness for phone acceptance.
+- First main deployment run `34295254808` passed validation but failed at schema verification before deployment. Corrected its Wrangler invocation from the bulk-import `--file` path to the SELECT-only `--command` query path. Exact original failure logs require GitHub sign-in; this correction does not claim the original error cause is confirmed.
 
 Local tests do not replace the physical-phone acceptance gate. After deployment, photograph a real receipt, approve it, reopen/edit it, view its original, and confirm corrected values in the filtered CSV. Also verify mixed failed/successful images, manual recovery and final-item skip on the production URL.

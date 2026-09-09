@@ -68,7 +68,8 @@ jobs:
           name: frontend
           path: app/dist
       - name: Verify existing production schema
-        run: npx wrangler d1 execute snap-it-db --file=src/db/schema-verify.sql --remote
+        # --file invokes D1 bulk import; use the query path for SELECT-only verification.
+        run: npx wrangler d1 execute snap-it-db --command="$(cat src/db/schema-verify.sql)" --remote
       - name: Inject secrets
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
