@@ -3,11 +3,11 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import ResultsPage from './ResultsPage';
 
 const mocked = vi.hoisted(() => ({
-  state: {} as any, navigate: vi.fn(), manual: vi.fn(), skip: vi.fn(), approve: vi.fn(), scan: vi.fn(), duplicates: vi.fn(),
+  state: {} as any, navigate: vi.fn(), manual: vi.fn(), skip: vi.fn(), approve: vi.fn(), scan: vi.fn(), duplicates: vi.fn(), recoverDate: vi.fn(),
 }));
 vi.mock('react-router-dom', () => ({ useLocation: () => ({ state: mocked.state }), useNavigate: () => mocked.navigate }));
 vi.mock('../lib/api', () => ({
-  documentApi: { manual: mocked.manual, skip: mocked.skip },
+  documentApi: { recoverDate: mocked.recoverDate, manual: mocked.manual, skip: mocked.skip },
   ledgerApi: { updateAndApprove: mocked.approve, duplicates: mocked.duplicates }, scanApi: { processDocumentRaw: mocked.scan },
 }));
 vi.mock('../lib/camera', () => ({ fileToCapture: async () => ({ base64: 'replacement', mimeType: 'image/jpeg', fileName: 'new.jpg' }) }));
@@ -110,4 +110,13 @@ it('retains the item and entered values when deletion fails', async () => {
   mocked.state.results = [success()]; mount(); await click('Delete');
   expect(tree.root.findAll(n => n.props.className === 'review-card')).toHaveLength(1);
   expect(tree.root.findAllByType('input').some(n => n.props.value === 'Shop')).toBe(true);
+});
+
+it('prefills a missing date from source recovery and marks it for verification', async () => {
+  mocked.recoverDate.mockResolvedValue({date:'2026-07-13',confidence_date:0.7,printed_date:'26/07/13'});
+  const item = success(); mocked.state.results=[{...item,extractionId:'date-test',extraction:{...item.extraction,date:null}}];
+  await act(async()=>{mount();});
+  expect(mocked.recoverDate).toHaveBeenCalledWith('date-test');
+  expect(tree.root.findAllByType('input').find(n=>n.props.type==='date')?.props.value).toBe('2026-07-13');
+  expect(JSON.stringify(tree.toJSON())).toContain('Verify date — recovered');
 });

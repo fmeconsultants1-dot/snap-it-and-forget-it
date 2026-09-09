@@ -127,6 +127,32 @@ export default function ResultsPage() {
     try { sessionStorage.setItem(storageKey, JSON.stringify({ results, edits, statuses, manualItems })); } catch {}
   }, [storageKey, results, edits, statuses, manualItems]);
 
+  const dateRecoveryStarted = useRef(new Set<string>());
+  const [dateRecovery, setDateRecovery] = useState<Record<number, string>>({});
+  useEffect(() => {
+
+    async function recoverMissingDates() {
+      for (let idx = 0; idx < results.length; idx++) {
+        const result = results[idx]!;
+        if (!result.extractionId || result.extraction?.date || edits[idx]?.date || result.approved || statuses[idx] === 'done' || statuses[idx] === 'skipped' || dateRecoveryStarted.current.has(result.extractionId)) continue;
+        dateRecoveryStarted.current.add(result.extractionId);
+        setDateRecovery(prev => ({...prev,[idx]:'Reading date from original…'}));
+        try {
+          const candidate = await documentApi.recoverDate(result.extractionId);
+
+          if (candidate.date) {
+            setEdits(prev => prev.map((edit,i) => i === idx && !edit.date ? {...edit,date:candidate.date!} : edit));
+            setDateRecovery(prev => ({...prev,[idx]:`Verify date — recovered from original (${Math.round(candidate.confidence_date*100)}%). Compare with the printed date.`}));
+          } else setDateRecovery(prev => ({...prev,[idx]:'No usable date recovered. Enter the printed date manually.'}));
+        } catch {
+          setDateRecovery(prev => ({...prev,[idx]:'Date recovery unavailable. Enter the printed date manually.'}));
+        }
+      }
+    }
+    void recoverMissingDates();
+
+  }, [results]);
+
   function updateField(idx: number, field: keyof EditState, value: string | boolean) {
     setEdits(prev => { const n = [...prev]; n[idx] = { ...n[idx]!, [field]: value }; return n; });
     // Clear field error on change
@@ -388,6 +414,7 @@ export default function ResultsPage() {
                   placeholder="Vendor or issuer name" />
 
                 <label className="review-label">Date {fe?.date && <span style={{ color:'var(--red)', marginLeft:4 }}>← {fe.date}</span>}</label>
+                {dateRecovery[idx] && <p role="status" style={{color:'var(--gold)',fontSize:13}}>{dateRecovery[idx]}</p>}
                 {ex?.date && ex.confidence_date < 0.90 && <p style={{ color:'var(--gold)', fontSize:13 }} role="status">Verify date — low confidence ({Math.round(ex.confidence_date * 100)}%). Compare the prefilled date with the original document.</p>}
                 <input className="review-input" type="date" value={edit.date}
                   style={{ borderColor: fe?.date ? 'var(--red)' : undefined }}

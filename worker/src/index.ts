@@ -223,6 +223,22 @@ export default {
         const result = await env.DB.prepare('SELECT * FROM audit_log ORDER BY performed_at DESC LIMIT ?').bind(Number(url.searchParams.get('limit') ?? 100)).all();
         return json({ entries: result.results }, 200, origin);
       }
+      const dateRecoveryMatch = path.match(/^\/api\/extractions\/([^/]+)\/recover-date$/);
+      if (dateRecoveryMatch && method === 'POST') {
+        const row = await env.DB.prepare(`SELECT ex.vendor,ex.issuer,ex.doc_type,ex.total,ex.date,ex.confidence_date,d.r2_key,d.mime_type
+          FROM extractions ex JOIN documents d ON d.id=ex.document_id WHERE ex.id=?`).bind(dateRecoveryMatch[1]!).first() as any;
+        if (!row) return err('Extraction not found', 404, origin);
+        if (row.date) return json({date:row.date,confidence_date:row.confidence_date,verify_date:row.confidence_date < 0.9},200,origin);
+        if (!row.r2_key) return err('Source not found',404,origin);
+        const source = await env.DOCUMENTS.get(row.r2_key);
+        if (!source) return err('Source not found',404,origin);
+        const recovered = await new GeminiAdapter(env.GEMINI_API_KEY).recoverDate(
+          arrayBufferToBase64(await source.arrayBuffer()),row.mime_type ?? 'image/jpeg',
+          {vendor:row.vendor ?? row.issuer ?? '',doc_type:row.doc_type,total:row.total});
+        // Candidate only: approved ledger values, original extraction and R2 are never written here.
+        return json(recovered,200,origin);
+      }
+
       const extractionDiagMatch = path.match(/^\/api\/diagnostic\/extraction\/([^/]+)$/);
       if (extractionDiagMatch && method === 'GET') {
         const row = await env.DB.prepare('SELECT id, date, raw_fields, gemini_model, extracted_at FROM extractions WHERE id = ?').bind(extractionDiagMatch[1]!).first() as any;

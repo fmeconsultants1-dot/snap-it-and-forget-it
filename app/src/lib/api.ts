@@ -177,6 +177,7 @@ export const scanApi = {
 };
 
 export const documentApi = {
+  recoverDate: (extractionId: string) => request<{date: string | null; confidence_date: number; printed_date?: string | null}>(`/api/extractions/${extractionId}/recover-date`, {method:'POST'}),
   skip: (documentId: string, ledgerEntryId?: string) => request<{ success: boolean }>(`/api/documents/${documentId}/skip`, { method: 'POST', body: JSON.stringify({ ledgerEntryId }) }),
   /**
    * Manual recovery for a failed extraction.
