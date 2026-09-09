@@ -1,3 +1,4 @@
+import { buildWhereClause, type LedgerFilter } from './LedgerService';
 /**
  * ExportService.ts - FME Mission 001 - Snap It & Forget It
  * Accountant-ready exports: ledger CSV, journal CSV, full JSON.
@@ -8,13 +9,9 @@ export class ExportService {
   private db: D1Database;
   constructor(db: D1Database) { this.db = db; }
 
-  async exportLedgerCSV(params: { dateFrom?: string; dateTo?: string; status?: string }): Promise<string> {
-    let query = 'SELECT * FROM ledger_entries WHERE 1=1';
-    const binds: unknown[] = [];
-    if (params.dateFrom) { query += ' AND date >= ?'; binds.push(params.dateFrom); }
-    if (params.dateTo)   { query += ' AND date <= ?'; binds.push(params.dateTo); }
-    if (params.status)   { query += ' AND status = ?'; binds.push(params.status); }
-    query += ' ORDER BY date ASC, created_at ASC';
+  async exportLedgerCSV(params: LedgerFilter): Promise<string> {
+    const { clause, params: binds } = buildWhereClause(params);
+    const query = `SELECT * FROM ledger_entries WHERE 1=1${clause} ORDER BY date ASC, created_at ASC`;
     const result = await this.db.prepare(query).bind(...binds).all();
     const rows = result.results as any[];
     const header = 'ref_number,date,entity,entry_type,amount,debit_amount,credit_amount,balance_type,status,reversal_of,refund_type,created_at\n';

@@ -7,9 +7,9 @@
  * - Statements tab: hides monetary total, shows reference-document note
  * - No redesign — layout unchanged
  */
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ledgerApi, LedgerEntry, JournalEntry } from '../lib/api';
+import { ledgerApi, LedgerEntry, JournalEntry, ScanResult } from '../lib/api';
 
 const API_URL = import.meta.env.VITE_API_URL ?? '';
 
@@ -204,10 +204,13 @@ function SourceModal({ entryId, onClose }: { entryId: string; onClose: () => voi
   const [src, setSrc] = useState<string | null>(null);
   const [err, setErr] = useState('');
   useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
     fetch(`${API_URL}/api/ledger/${entryId}/source`)
       .then(r => { if (!r.ok) throw new Error('Not found'); return r.blob(); })
-      .then(blob => setSrc(URL.createObjectURL(blob)))
-      .catch(() => setErr('Source document not available'));
+      .then(blob => { if (active) { objectUrl = URL.createObjectURL(blob); setSrc(objectUrl); } })
+      .catch(() => { if (active) setErr('Source document not available'); });
+    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
   }, [entryId]);
   return (
     <div style={overlay} onClick={onClose}><div style={{ ...modal, padding: 8 }} onClick={e => e.stopPropagation()}>
@@ -235,28 +238,55 @@ export default function LedgerPage() {
   const [splitEntry,     setSplitEntry]    = useState<LedgerEntry | null>(null);
   const [sourceEntryId,  setSourceEntryId] = useState<string | null>(null);
 
+  const requestId = useRef(0);
+  const [error, setError] = useState('');
+
   const fetchData = useCallback(async () => {
+    const currentRequest = ++requestId.current;
+    setError('');
     setLoading(true);
     try {
       const params = buildParams(tab, runId);
       if (view === 'register') {
         const res = await ledgerApi.getEntries(params);
+        if (currentRequest !== requestId.current) return;
         const seen = new Set<string>();
         setLedgerEntries(res.entries.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true; }));
         setRunningTotal(res.runningTotal); // now filter-consistent
       } else {
         const res = await ledgerApi.getJournalEntries(params);
+        if (currentRequest !== requestId.current) return;
         const seen = new Set<string>();
         setJournalEntries(res.entries.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true; }));
       }
-    } finally { setLoading(false); }
+    } catch (e) {
+      if (currentRequest === requestId.current) {
+        setLedgerEntries([]); setJournalEntries([]); setRunningTotal(0);
+        setError(e instanceof Error ? e.message : 'Unable to load ledger.');
+      }
+    } finally { if (currentRequest === requestId.current) setLoading(false); }
   }, [view, tab, runId]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchData(); return () => { requestId.current++; }; }, [fetchData]);
+
+  const editEntry = async (entry: LedgerEntry) => {
+    try {
+      const corrections = await ledgerApi.getReview(entry.id);
+      const result: ScanResult = {
+        documentId: entry.document_id, extractionId: entry.extraction_id,
+        ledgerEntryId: entry.id, journalEntryId: '', refNumber: entry.ref_number,
+        lineCount: 0, itcFlags: [], status: 'DONE',
+        extraction: { ...corrections, issuer: null, line_items: [], confidence_vendor: 1,
+          confidence_date: 1, confidence_total: 1, confidence_category: 1 } as ScanResult['extraction'],
+      };
+      try { sessionStorage.removeItem(`snap-review:${entry.id}`); } catch {}
+      navigate('/results', { state: { results: [result], runId: entry.run_id, editId: entry.id } });
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to reopen record.'); }
+  };
 
   const handleApprove = async (id: string) => {
     setApprovingId(id);
-    try { await ledgerApi.approve(id); await fetchData(); } finally { setApprovingId(null); }
+    try { await ledgerApi.approve(id); await fetchData(); } catch (e) { setError(e instanceof Error ? e.message : 'Approval failed.'); } finally { setApprovingId(null); }
   };
 
   const isStatementTab = tab === 'statements';
@@ -277,11 +307,11 @@ export default function LedgerPage() {
 
       <div className="tab-bar">
         {TABS.map(t => (
-          <button key={t.id} className={`tab${tab===t.id?' active':''}`} onClick={()=>setTab(t.id)}>{t.label}</button>
+          <button key={t.id} className={`tab${tab===t.id?' active':''}`} disabled={t.id === 'this_run' && !runId} onClick={()=>setTab(t.id)}>{t.label}</button>
         ))}
       </div>
 
-      {loading && <div className="spinner" />}
+      {error && <p role="alert" style={{ color: 'var(--red)' }}>{error} <button className="btn-secondary" onClick={() => fetchData()}>Retry</button></p>}{loading && <div className="spinner" />}
 
       {!loading && view === 'register' && (
         <>
@@ -309,10 +339,11 @@ export default function LedgerPage() {
                     <div className="ledger-entity">{entry.entity ?? '—'}</div>
                     <span className={`badge ${entry.status}`} style={{ marginTop:4, display:'inline-block' }}>{entry.status.replace('_',' ')}</span>
                     <div style={{ display:'flex', gap:5, marginTop:6, flexWrap:'wrap' }}>
-                      {!['REFUND','CREDIT_NOTE'].includes(entry.entry_type) && (
+                      {['RECEIPT','INVOICE','STATEMENT','DOCUMENT'].includes(entry.entry_type) && <button className="btn-secondary" style={{ fontSize:10, padding:'2px 8px' }} onClick={() => editEntry(entry)}>Edit / Review</button>}
+                      {['RECEIPT','INVOICE'].includes(entry.entry_type) && entry.status === 'APPROVED' && (
                         <button className="btn-secondary" style={{ fontSize:10, padding:'2px 8px' }} onClick={()=>setRefundEntry(entry)}>↩ Refund</button>
                       )}
-                      <button className="btn-secondary" style={{ fontSize:10, padding:'2px 8px' }} onClick={()=>setSplitEntry(entry)}>✂ Split</button>
+                      {['RECEIPT','INVOICE'].includes(entry.entry_type) && entry.status === 'APPROVED' && <button className="btn-secondary" style={{ fontSize:10, padding:'2px 8px' }} onClick={()=>setSplitEntry(entry)}>✂ Split</button>}
                       <button className="btn-secondary" style={{ fontSize:10, padding:'2px 8px' }} onClick={()=>setSourceEntryId(entry.id)}>📄 Doc</button>
                     </div>
                   </div>
@@ -373,7 +404,7 @@ export default function LedgerPage() {
             </div>
           ))}
           {journalEntries.length > 0 && (
-            <button className="btn-primary" style={{ marginTop:8 }} onClick={() => { window.location.href = ledgerApi.exportCsv(); }}>Export for Accountant</button>
+            <button className="btn-primary" style={{ marginTop:8 }} onClick={() => { window.location.href = ledgerApi.exportCsv(buildParams(tab, runId)); }}>Export for Accountant</button>
           )}
           <button className="btn-primary" style={{ marginTop:10, background:'var(--bg-card)', color:'var(--cream)' }} onClick={() => navigate('/camera')}>Scan More Documents</button>
         </>

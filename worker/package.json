@@ -23,7 +23,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241230.0",
     "@types/better-sqlite3": "^7.6.11",
-    "better-sqlite3": "^9.4.3",
+    "better-sqlite3": "^12.11.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8",
     "wrangler": "^3.101.0"

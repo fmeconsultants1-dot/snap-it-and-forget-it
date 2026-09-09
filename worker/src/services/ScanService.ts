@@ -12,7 +12,7 @@
  *   - Audit record on successful recovery
  */
 import { GeminiAdapter, ExtractionResult } from '../adapters/GeminiAdapter';
-import { LedgerService, BusinessConfig, ReviewCorrections } from './LedgerService';
+import { LedgerService, BusinessConfig, ReviewCorrections, validateApprovalReadiness } from './LedgerService';
 
 function generateId(): string { return crypto.randomUUID(); }
 
@@ -151,8 +151,18 @@ export class ScanService {
       };
     }
 
+    const validation = validateApprovalReadiness(corrections.doc_type ?? 'RECEIPT', corrections.vendor ?? null, corrections.date ?? null, corrections.total ?? null, corrections.confirm_zero_total === true);
+    if (validation) throw new Error(validation);
+    for (const key of ['subtotal', 'tax', 'tax_gst', 'tax_hst', 'tax_pst'] as const) {
+      const value = corrections[key];
+      if (value != null && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) throw new Error('Amounts must be finite and non-negative.');
+    }
+    if ((corrections.tax_gst ?? 0) + (corrections.tax_hst ?? 0) + (corrections.tax_pst ?? 0) > (corrections.total ?? 0)) throw new Error('Tax cannot exceed total.');
+
+    if (corrections.tax != null && Math.round(corrections.tax * 100) !== Math.round(((corrections.tax_gst ?? 0) + (corrections.tax_hst ?? 0) + (corrections.tax_pst ?? 0)) * 100)) throw new Error('GST, HST and PST must add up to the tax total.');
+
     // 4. No existing manual record — create extraction from user-supplied corrections
-    const extractionId = generateId();
+    const extractionId = `manual-extraction-${documentId}`;
     const docType      = corrections.doc_type ?? 'RECEIPT';
     const vendor       = corrections.vendor ?? null;
     const date         = corrections.date ?? null;
@@ -165,7 +175,7 @@ export class ScanService {
     });
 
     await this.db.prepare(`
-      INSERT INTO extractions
+      INSERT OR IGNORE INTO extractions
         (id, document_id, doc_type, vendor, date, total, subtotal, tax,
          tax_gst, tax_hst, tax_pst, payment_method, category, description,
          issuer, line_items, raw_fields,
@@ -244,6 +254,29 @@ export class ScanService {
   // ---------------------------------------------------------------------------
   // Existing methods unchanged
   // ---------------------------------------------------------------------------
+
+  async skipDocument(documentId: string, ledgerEntryId?: string): Promise<void> {
+    const doc = await this.db.prepare('SELECT * FROM documents WHERE id=?').bind(documentId).first() as any;
+    if (!doc) throw new Error('Document not found');
+    if (ledgerEntryId) {
+      const entry = await this.db.prepare('SELECT * FROM ledger_entries WHERE id=? AND document_id=?').bind(ledgerEntryId, documentId).first() as any;
+      if (!entry || !['NEEDS_REVIEW', 'DRAFT', 'SKIPPED'].includes(entry.status)) throw new Error('Only pending entries can be skipped');
+      if (entry.status === 'SKIPPED') return;
+      await this.db.batch([
+        this.db.prepare("UPDATE ledger_entries SET status='SKIPPED' WHERE id=?").bind(ledgerEntryId),
+        this.db.prepare("UPDATE journal_entries SET status='SKIPPED' WHERE ledger_entry_id=?").bind(ledgerEntryId),
+        this.db.prepare("INSERT INTO audit_log(entity_type,entity_id,action,after_state) VALUES('ledger_entries',?,'SKIPPED',?)").bind(ledgerEntryId, JSON.stringify({ documentId })),
+      ]);
+    } else {
+      const ledger = await this.db.prepare('SELECT id FROM ledger_entries WHERE document_id=? LIMIT 1').bind(documentId).first();
+      if (ledger) throw new Error('Review the existing ledger entry before skipping this document');
+      if (doc.status === 'SKIPPED') return;
+      await this.db.batch([
+        this.db.prepare("UPDATE documents SET status='SKIPPED' WHERE id=?").bind(documentId),
+        this.db.prepare("INSERT INTO audit_log(entity_type,entity_id,action,after_state) VALUES('documents',?,'SKIPPED',?)").bind(documentId, JSON.stringify({ previousStatus: doc.status })),
+      ]);
+    }
+  }
 
   async createRun(documentCount: number): Promise<string> {
     const runId = generateId();

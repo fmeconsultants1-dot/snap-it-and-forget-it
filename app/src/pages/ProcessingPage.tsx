@@ -61,8 +61,10 @@ export default function ProcessingPage() {
     try {
       const { runId } = await scanApi.createRun(documents.length);
       rId = runId;
-    } catch {
-      rId = crypto.randomUUID();
+    } catch (error) {
+      setRows(prev => prev.map(row => ({ ...row, status: 'FAILED', error: error instanceof Error ? error.message : 'Unable to start scan. Return to camera and retry.' })));
+      setAllDone(true);
+      return;
     }
     runIdRef.current = rId;
 
@@ -184,7 +186,8 @@ export default function ProcessingPage() {
         );
       })}
 
-      {allDone && (
+      {allDone && allResults.length === 0 && <button className="btn-primary" onClick={() => navigate('/camera')}>Retry Scan</button>}
+      {allDone && allResults.length > 0 && (
         <button
           className="btn-primary"
           style={{ marginTop: 24, width: '100%' }}

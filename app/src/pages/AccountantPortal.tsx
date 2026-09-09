@@ -4,7 +4,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8787';
+const API_URL = import.meta.env.VITE_API_URL ?? '';
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`);

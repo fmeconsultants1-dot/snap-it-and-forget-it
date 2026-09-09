@@ -7,6 +7,7 @@
  * Returns 409 on conflict, 422 on validation failure.
  */
 import { ScanService, Env, ManualConflictError } from './services/ScanService';
+import { ExportService } from './services/ExportService';
 import { LedgerService } from './services/LedgerService';
 import { WatchdogService } from './services/WatchdogService';
 import { GeminiAdapter } from './adapters/GeminiAdapter';
@@ -134,6 +135,19 @@ export default {
         }
       }
 
+      const skipMatch = path.match(/^\/api\/documents\/([^/]+)\/skip$/);
+      if (skipMatch && method === 'POST') {
+        const body = await request.json() as { ledgerEntryId?: string };
+        try {
+          await new ScanService(env).skipDocument(skipMatch[1]!, body.ledgerEntryId);
+          return json({ success: true }, 200, origin);
+        } catch (e: any) { return err(e.message, 422, origin); }
+      }
+      const reviewMatch = path.match(/^\/api\/ledger\/([^/]+)\/review$/);
+      if (reviewMatch && method === 'GET') {
+        return json(await new LedgerService(env.DB).getReviewCorrections(reviewMatch[1]!), 200, origin);
+      }
+
       if (path === '/api/ledger' && method === 'GET') {
         const filter = {
           runId: url.searchParams.get('runId') ?? undefined,
@@ -195,10 +209,15 @@ export default {
         return json({ imported: ids.length, ids }, 201, origin);
       }
       if (path === '/api/export/ledger' && method === 'GET') {
-        const entries = await new LedgerService(env.DB).getLedgerEntries({ limit: 10000 });
-        const header = 'ref_number,date,entity,entry_type,amount,status\n';
-        const rows = entries.map(e => `${e.ref_number},${e.date ?? ''},"${(e.entity ?? '').replace(/"/g, '""')}",${e.entry_type},${e.amount},${e.status}`).join('\n');
-        return new Response(header + rows, { status: 200, headers: { 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename="snap-it-ledger.csv"', ...cors(origin) } });
+        const csv = await new ExportService(env.DB).exportLedgerCSV({
+          runId: url.searchParams.get('runId') ?? undefined,
+          dateFilter: url.searchParams.get('dateFilter') ?? undefined,
+          entryType: url.searchParams.get('entryType') ?? undefined,
+          status: url.searchParams.get('status') ?? undefined,
+          dateFrom: url.searchParams.get('dateFrom') ?? undefined,
+          dateTo: url.searchParams.get('dateTo') ?? undefined,
+        });
+        return new Response(csv, { status: 200, headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="snap-it-ledger.csv"', ...cors(origin) } });
       }
       if (path === '/api/audit' && method === 'GET') {
         const result = await env.DB.prepare('SELECT * FROM audit_log ORDER BY performed_at DESC LIMIT ?').bind(Number(url.searchParams.get('limit') ?? 100)).all();

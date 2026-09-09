@@ -99,13 +99,15 @@ export interface LedgerFilter {
   offset?: number;
 }
 
-function validateApprovalReadiness(
+export function validateApprovalReadiness(
   docType: string,
   vendor: string | null,
   date: string | null,
   total: number | null,
   confirmZero: boolean
 ): string | null {
+  if (!['RECEIPT', 'INVOICE', 'STATEMENT', 'DOCUMENT'].includes(docType)) return 'Unsupported document type.';
+  if (total !== null && (typeof total !== 'number' || !Number.isFinite(total) || total < 0)) return 'Total must be a finite, non-negative amount.';
   const requiresDate   = docType === 'RECEIPT' || docType === 'INVOICE' || docType === 'STATEMENT';
   const requiresVendor = docType === 'RECEIPT' || docType === 'INVOICE';
 
@@ -116,7 +118,8 @@ function validateApprovalReadiness(
     const currentYear = new Date().getFullYear();
     const year = date ? parseInt(date.slice(0, 4), 10) : NaN;
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(year) ||
-        year < currentYear - 5 || year > currentYear + 1) {
+        year < currentYear - 5 || year > currentYear + 1 ||
+        !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) {
       return 'A valid date (YYYY-MM-DD) is required for receipts, invoices, and statements.';
     }
   }
@@ -227,17 +230,17 @@ function generateRef() { return Math.random().toString(16).slice(2, 8).toUpperCa
  * Build the shared WHERE clause for both getLedgerEntries and getRunningTotal.
  * Returns { clause, params } where clause starts with ' AND ...' (appended to WHERE 1=1).
  */
-function buildWhereClause(filter: LedgerFilter): { clause: string; params: unknown[] } {
+export function buildWhereClause(filter: LedgerFilter, prefix = ''): { clause: string; params: unknown[] } {
   let clause = '';
   const params: unknown[] = [];
 
-  if (filter.runId)     { clause += ' AND run_id=?';    params.push(filter.runId); }
-  if (filter.dateFilter === 'today') clause += " AND date(created_at)=date('now')";
-  if (filter.entryType) { clause += ' AND entry_type=?'; params.push(filter.entryType); }
-  if (filter.status)    { clause += ' AND status=?';    params.push(filter.status); }
+  if (filter.runId)     { clause += ` AND ${prefix}run_id=?`;    params.push(filter.runId); }
+  if (filter.dateFilter === 'today') clause += ` AND date(${prefix}created_at)=date('now')`;
+  if (filter.entryType) { clause += ` AND ${prefix}entry_type=?`; params.push(filter.entryType); }
+  if (filter.status)    { clause += ` AND ${prefix}status=?`;    params.push(filter.status); }
   // dateFrom/dateTo filter on the business-document date column
-  if (filter.dateFrom)  { clause += ' AND date >= ?';   params.push(filter.dateFrom); }
-  if (filter.dateTo)    { clause += ' AND date <= ?';   params.push(filter.dateTo); }
+  if (filter.dateFrom)  { clause += ` AND ${prefix}date >= ?`;   params.push(filter.dateFrom); }
+  if (filter.dateTo)    { clause += ` AND ${prefix}date <= ?`;   params.push(filter.dateTo); }
 
   return { clause, params };
 }
@@ -261,7 +264,7 @@ export class LedgerService {
   ): Promise<{ ledgerEntryId: string; journalEntryId: string; refNumber: string; lineCount: number; itcFlags: string[]; isBalanced: boolean }> {
     const amount      = extraction.total ?? 0;
     const refNumber   = generateRef();
-    const leId        = generateId();
+    const leId        = extraction.gemini_model === 'MANUAL_ENTRY' ? `manual-ledger-${documentId}` : generateId();
     const jeId        = generateId();
     const entity      = extraction.vendor ?? extraction.issuer ?? 'Unknown';
     const isExpense   = extraction.doc_type === 'RECEIPT' || extraction.doc_type === 'INVOICE';
@@ -331,10 +334,15 @@ export class LedgerService {
     if (!jeRow) throw new Error(`Journal entry not found for ledger entry: ${ledgerEntryId}`);
     const jeId: string = jeRow.id;
 
+    const linked = await this.db.prepare('SELECT id FROM ledger_entries WHERE reversal_of=? LIMIT 1').bind(ledgerEntryId).first();
+    const split = await this.db.prepare('SELECT id FROM split_lines WHERE ledger_entry_id=? LIMIT 1').bind(ledgerEntryId).first();
+    if (linked || split) throw new Error('This record has refunds or splits. Editing would overwrite its accounting allocations.');
+    const saved = await this.getReviewCorrections(ledgerEntryId);
+    corrections = { ...saved, ...corrections };
     const docType     = (corrections.doc_type ?? existing.entry_type ?? 'RECEIPT') as ExtractionResult['doc_type'];
     const vendor      = corrections.vendor       !== undefined ? corrections.vendor      : (existing.entity ?? null);
     const date        = corrections.date         !== undefined ? corrections.date        : (existing.date   ?? null);
-    const total       = corrections.total        !== undefined ? (corrections.total ?? 0) : (existing.amount ?? 0);
+    const total       = corrections.total        !== undefined ? corrections.total : (existing.amount ?? 0);
     const confirmZero = corrections.confirm_zero_total === true;
 
     const validationError = validateApprovalReadiness(docType, vendor, date, total, confirmZero);
@@ -344,12 +352,15 @@ export class LedgerService {
     const paymentMethod = corrections.payment_method !== undefined ? corrections.payment_method : null;
     const description   = corrections.description   !== undefined ? corrections.description   : null;
     const rawTax        = corrections.tax ?? null;
-    const taxGst        = corrections.tax_gst !== undefined ? (corrections.tax_gst ?? 0) : (rawTax != null ? rawTax : 0);
+    const taxGst        = corrections.tax_gst !== undefined ? (corrections.tax_gst ?? 0) : 0;
     const taxHst        = corrections.tax_hst !== undefined ? (corrections.tax_hst ?? 0) : 0;
     const taxPst        = corrections.tax_pst !== undefined ? (corrections.tax_pst ?? 0) : 0;
-    const subtotal      = corrections.subtotal !== undefined ? (corrections.subtotal ?? 0) : Math.max(0, total - taxGst - taxHst - taxPst);
+    const subtotal      = corrections.subtotal !== undefined ? (corrections.subtotal ?? 0) : Math.max(0, (total ?? 0) - taxGst - taxHst - taxPst);
     const taxValue: number | null = (rawTax ?? (taxGst + taxHst + taxPst)) || null;
-    const safeDate = date!;
+    if (rawTax != null && (typeof rawTax !== 'number' || !Number.isFinite(rawTax) || rawTax < 0 || toCents(rawTax) !== toCents(taxGst + taxHst + taxPst))) throw new Error('GST, HST and PST must add up to the tax total.');
+    if ([subtotal, taxGst, taxHst, taxPst].some(n => typeof n !== 'number' || !Number.isFinite(n) || n < 0)) throw new Error('Amounts must be finite and non-negative.');
+    if (taxGst + taxHst + taxPst > (total ?? 0)) throw new Error('Tax cannot exceed total.');
+    const safeDate = date ?? new Date().toISOString().slice(0, 10);
 
     const syntheticExtraction: ExtractionResult = {
       doc_type: docType, vendor, date: safeDate, total, subtotal,
@@ -375,7 +386,7 @@ export class LedgerService {
           entry_type=?, review_note=?, status='APPROVED',
           approved_at=datetime('now'), approved_by=?
       WHERE id=?
-    `).bind(entity, safeDate, total, isExpense ? total : 0, isExpense ? total : 0,
+    `).bind(entity, date, total ?? 0, isExpense ? total : 0, isExpense ? total : 0,
       docType, reviewNote, approvedBy, ledgerEntryId));
     stmts.push(this.db.prepare(`
       UPDATE journal_entries
@@ -440,22 +451,22 @@ export class LedgerService {
   async getRunningTotal(filter: LedgerFilter = {}): Promise<number> {
     const { clause, params } = buildWhereClause(filter);
     const q = `
-      SELECT ROUND(COALESCE(SUM(
+      SELECT COALESCE(SUM(
         CASE
-          WHEN entry_type IN ('RECEIPT','INVOICE') THEN amount
-          WHEN entry_type = 'REFUND'               THEN -amount
+          WHEN entry_type IN ('RECEIPT','INVOICE') THEN CAST(ROUND(amount * 100) AS INTEGER)
+          WHEN entry_type = 'REFUND'               THEN -CAST(ROUND(amount * 100) AS INTEGER)
           ELSE 0
         END
-      ), 0), 2) AS t
+      ), 0) / 100.0 AS t
       FROM ledger_entries
-      WHERE 1=1${clause}
+      WHERE status != 'SKIPPED'${clause}
     `;
     const r = await this.db.prepare(q).bind(...params).first() as any;
     return r?.t ?? 0;
   }
 
   async getJournalEntries(filter: LedgerFilter): Promise<JournalEntryRow[]> {
-    const { clause, params } = buildWhereClause(filter);
+    const { clause, params } = buildWhereClause(filter, 'le.');
     const q = `
       SELECT je.*,le.run_id,le.entry_type,le.entity,le.status as ledger_status
       FROM journal_entries je JOIN ledger_entries le ON je.ledger_entry_id=le.id
@@ -469,6 +480,21 @@ export class LedgerService {
       e.lines = lr.results as unknown as JournalLineRow[];
     }
     return entries;
+  }
+
+  async getReviewCorrections(id: string): Promise<ReviewCorrections> {
+    const row = await this.db.prepare(`SELECT le.*, ex.category, ex.subtotal, ex.tax,
+      ex.tax_gst, ex.tax_hst, ex.tax_pst, ex.payment_method, ex.description
+      FROM ledger_entries le LEFT JOIN extractions ex ON ex.id=le.extraction_id WHERE le.id=?`).bind(id).first() as any;
+    if (!row) throw new Error('Ledger entry not found');
+    const audit = await this.db.prepare("SELECT after_state FROM audit_log WHERE entity_id=? AND action='UPDATE_AND_APPROVE' ORDER BY id DESC LIMIT 1").bind(id).first() as any;
+    let corrected = {};
+    try { corrected = JSON.parse(audit?.after_state ?? '{}').corrections ?? {}; } catch {}
+    return { category: row.category, subtotal: row.subtotal, tax: row.tax,
+      tax_gst: row.tax_gst, tax_hst: row.tax_hst, tax_pst: row.tax_pst,
+      payment_method: row.payment_method, description: row.description,
+      ...corrected, vendor: row.entity, date: row.date, total: row.amount, doc_type: row.entry_type,
+      confirm_zero_total: false };
   }
 
   async getLedgerEntryById(id: string): Promise<LedgerEntryRow | null> {

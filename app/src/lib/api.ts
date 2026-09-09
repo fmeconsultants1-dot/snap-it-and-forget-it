@@ -30,7 +30,7 @@ async function scanRequestRaw(path: string, options: RequestInit): Promise<Proce
     headers: { 'Content-Type': 'application/json', ...(options.headers ?? {}) },
   });
   const body = await res.json().catch(() => null) as ProcessDocumentResponse | null;
-  if ((res.status === 200 || res.status === 422) && body && Array.isArray(body.results)) {
+  if ((res.status === 200 || res.status === 422) && body && Array.isArray(body.results) && body.results.length > 0) {
     return body;
   }
   const errMsg = (body as any)?.error || (body as any)?.results?.[0]?.error || `HTTP ${res.status}`;
@@ -92,6 +92,8 @@ export interface ManualRecoveryResponse {
 export interface LedgerEntry {
   id: string;
   run_id: string;
+  document_id: string;
+  extraction_id: string;
   entry_type: string;
   entity: string | null;
   date: string | null;
@@ -174,6 +176,7 @@ export const scanApi = {
 };
 
 export const documentApi = {
+  skip: (documentId: string, ledgerEntryId?: string) => request<{ success: boolean }>(`/api/documents/${documentId}/skip`, { method: 'POST', body: JSON.stringify({ ledgerEntryId }) }),
   /**
    * Manual recovery for a failed extraction.
    * POST /api/documents/:documentId/manual
@@ -188,6 +191,7 @@ export const documentApi = {
 };
 
 export const ledgerApi = {
+  getReview: (id: string) => request<ReviewCorrections>(`/api/ledger/${id}/review`),
   getEntries: (params: {
     runId?: string; dateFilter?: string; entryType?: string; status?: string;
     dateFrom?: string; dateTo?: string; limit?: number; offset?: number;
@@ -221,7 +225,11 @@ export const ledgerApi = {
   updateAndApprove: (id: string, corrections: ReviewCorrections) =>
     request<{ success: boolean; isBalanced: boolean; itcFlags: string[] }>(
       `/api/ledger/${id}`, { method: 'PATCH', body: JSON.stringify(corrections) }),
-  exportCsv: () => `${API_URL}/api/export/ledger`,
+  exportCsv: (params: Record<string, string | undefined> = {}) => {
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) if (value) qs.set(key, value);
+    return `${API_URL}/api/export/ledger?${qs}`;
+  },
   getSplits:  (id: string) =>
     request<{ splits: any[]; count: number }>(`/api/ledger/${id}/splits`),
 };

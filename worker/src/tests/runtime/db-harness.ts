@@ -77,7 +77,7 @@ export function createTestDb(): D1Adapter {
   raw.pragma('foreign_keys = ON');
 
   const runSql = (sql: string) => {
-    const stmts = sql.split(';').map(s => s.trim()).filter(s => s.length > 0 && !s.startsWith('--'));
+    const stmts = sql.replace(/^\s*--.*$/gm, '').split(';').map(s => s.trim()).filter(s => s.length > 0);
     for (const stmt of stmts) {
       try { raw.prepare(stmt).run(); }
       catch (e: any) {
