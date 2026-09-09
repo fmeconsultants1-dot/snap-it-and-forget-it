@@ -22,4 +22,21 @@
 
 ## Live acceptance
 
+### Continuation checkpoint — 2026-09-09 00:23 UTC
+
+- Current local branch: `codex/production-finish-bug-e`, commit `1b95b69b7788aafdb4e922529e583f5b1158f5b9`. Working tree was clean at continuation; remote branch matches.
+- GitHub Actions run [34294226652](https://github.com/fmeconsultants1-dot/snap-it-and-forget-it/actions/runs/34294226652) completed successfully for that exact commit.
+- Remote `main` remains at `7ff98c2bbf02f3f5bada29aae51649ad9c2466bf`. GitHub reports the finish branch can merge automatically; no open PR exists for it.
+- Production `/health` returned `status: ok`, `db: true`; `/version` returned `git_sha: unknown`. The finish has not been verified as deployed.
+- PR creation needs an authenticated GitHub session. The available browser is signed out. No stored credential was read.
+- Next: create the PR from the existing branch, deploy through the validated main-branch workflow, verify the deployed SHA and frontend, then perform the physical-phone acceptance below.
+
+### Release validation — 2026-09-09
+
+- User authorized committing the preserved working tree and pushing directly to `main` for GitHub Actions deployment.
+- Re-ran existing suites: 169 worker tests and 6 frontend tests passed. Worker TypeScript build and frontend production build passed. Frontend built with the same production API URL as CI.
+- Production verification script syntax and diff whitespace checks passed.
+- Remote `main` remained at `7ff98c2` immediately before release; the finish branch contains that commit, allowing a normal fast-forward push.
+- Deployment and physical-phone acceptance are separate gates. Check the release Actions run and deployed SHA before declaring readiness for phone acceptance.
+
 Local tests do not replace the physical-phone acceptance gate. After deployment, photograph a real receipt, approve it, reopen/edit it, view its original, and confirm corrected values in the filtered CSV. Also verify mixed failed/successful images, manual recovery and final-item skip on the production URL.
