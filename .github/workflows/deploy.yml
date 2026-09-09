@@ -85,9 +85,9 @@ jobs:
           set -euo pipefail
           while IFS= read -r -d '' file; do
             key="${file#../app/dist/}"
-            npx wrangler r2 object put "snap-it-documents/frontend/$key" --file="$file" --remote
+            npx wrangler r2 object put "snap-it-documents/frontend/$key" --file="$file"
           done < <(find ../app/dist -type f ! -name index.html -print0)
-          npx wrangler r2 object put snap-it-documents/frontend/index.html --file=../app/dist/index.html --remote
+          npx wrangler r2 object put snap-it-documents/frontend/index.html --file=../app/dist/index.html
       - name: Verify health, version and frontend
         env:
           EXPECTED_SHA: ${{ github.sha }}
