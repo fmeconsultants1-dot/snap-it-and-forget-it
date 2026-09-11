@@ -71,3 +71,25 @@ it('returns null for unreadable source and never inserts the frozen current date
   expect((await recover([])).date).toBeNull();
   expect((await recover([candidate('09/11')])).date).toBeNull();
 });
+
+it.each(['Date/Time','Timestamp','receipt date','transaction time','purchase time','sale date','Date'])('accepts receipt label %s',async label=>{
+  expect((await recover([candidate('07/20/26 14:32',label)])).date).toBe('2026-07-20');
+});
+it.each(['Due Date','return-by date','Expiry Date','expiration timestamp','copyright year','loyalty date','member purchase date','period start','unrelated transaction date'])('rejects receipt label %s',async label=>{
+  expect((await recover([candidate('07/20/26',label)])).date).toBeNull();
+});
+it('prefers transaction date over timestamp and generic date',async()=>{
+  expect((await recover([candidate('07/01/26','Date'),candidate('07/02/26','Timestamp'),candidate('07/20/26','purchase date')])).date).toBe('2026-07-20');
+});
+it('prefers receipt timestamp over generic date',async()=>{
+  expect((await recover([candidate('07/01/26','Date'),candidate('07/20/26','Date/Time')])).date).toBe('2026-07-20');
+});
+it('requires generic date to be the only valid candidate on the receipt',async()=>{
+  expect((await recover([candidate('07/20/26','Date'),candidate('07/21/26','unrelated date')])).date).toBeNull();
+  expect((await recover([candidate('07/20/26','Date'),candidate('unreadable','unrelated date')])).date).toBe('2026-07-20');
+});
+it.each(['INVOICE','STATEMENT'])('does not broaden labels for %s',async type=>{
+  for (const label of ['Date','Date/Time','Timestamp']) {
+    expect((await recover([candidate('07/20/26',label)],type)).date).toBeNull();
+  }
+});

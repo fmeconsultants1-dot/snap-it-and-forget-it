@@ -198,7 +198,11 @@ Use confidence_date for transcription confidence only. If no date can be read, r
     const rank = (label: string) => {
       if (/due|payment deadline|copyright|period start/i.test(label)) return 0;
       switch (target.doc_type) {
-        case 'RECEIPT': return /transaction|purchase|sale\b/i.test(label) ? 2 : /receipt.*date|date.*receipt/i.test(label) ? 1 : 0;
+        case 'RECEIPT':
+          if (/return|expir|loyalty|member|unrelated/i.test(label)) return 0;
+          if (/transaction|purchase|\bsale\b/i.test(label)) return 3;
+          if (/receipt.*date|date.*receipt|date[\s/.-]*time|\btimestamp\b/i.test(label)) return 2;
+          return /^\s*date\s*:?\s*$/i.test(label) ? 1 : 0;
         case 'INVOICE': return /invoice|issue|bill(?:ing)?\s*date/i.test(label) ? 2 : 0;
         case 'STATEMENT': return /statement\s*date/i.test(label) ? 2 : /period.*end|ending|through/i.test(label) ? 1 : 0;
         case 'DOCUMENT': return /primary.*date|document.*date|date.*document|issue\s*date/i.test(label) ? 2 : 0;
@@ -229,7 +233,9 @@ Use confidence_date for transcription confidence only. If no date can be read, r
     };
     const ranked = candidates.map(c => ({...c, rank:/^\s*\d{4}\s*$/.test(c.printed) ? 0 : rank(c.label)})).filter(c => c.rank > 0);
     const bestRank = Math.max(0, ...ranked.map(c => c.rank));
-    const selected = ranked.filter(c => c.rank === bestRank).map(c => ({...c,date:normalize(c.printed)}));
+    const genericReceiptIsAmbiguous = target.doc_type === 'RECEIPT' && bestRank === 1
+      && candidates.filter(c => normalize(c.printed) !== null).length !== 1;
+    const selected = ranked.filter(c => c.rank === bestRank && !genericReceiptIsAmbiguous).map(c => ({...c,date:normalize(c.printed)}));
     // Conflicting or unreadable top-ranked evidence is not resolved by guessing.
     const dates = new Set(selected.map(c => c.date));
     const chosen = dates.size === 1 && !dates.has(null) ? selected[0] : undefined;
