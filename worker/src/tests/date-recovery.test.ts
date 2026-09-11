@@ -26,7 +26,6 @@ it.each([
   ['2026-07-13','2026-07-13'],
   ['07/13/2025','2025-07-13'],
   ['07/13/25','2025-07-13'],
-  ['07/13/2020',null],
   ['02/30/26',null],
   ['unreadable',null],
 ])('normalizes printed evidence %s to %s without today or model normalization',async(printed,date)=>{
@@ -139,4 +138,30 @@ it('requires an exact match and only one eligible receipt candidate',async()=>{
 });
 it.each([['INVOICE','invoice date'],['STATEMENT','statement date']])('keeps undated %s recovery unchanged',async(type,label)=>{
   expect((await recover([candidate('07/20',label)],type)).date).toBeNull();
+});
+
+it.each(['2020-07-20','2020-07-13','07/13/2020'])('offers old-year receipt %s only as a low-confidence review candidate',async printed=>{
+  const result=await recover([candidate(printed)]);
+  expect(result.date).toBe(printed.includes('20-07-20') ? '2026-07-20' : '2026-07-13');
+  expect(result.confidence_date).toBe(0.4);
+  expect(result.verify_date).toBe(true);
+  expect(result.printed_date).toBe(printed);
+});
+it.each(['2025-07-20','2026-07-20'])('preserves in-range receipt date %s',async printed=>{
+  expect((await recover([candidate(printed)])).date).toBe(printed);
+});
+it.each(['2020-07-13','2025-07-20','2026','07/21'])('blocks old-year fallback when other date/year evidence exists: %s',async printed=>{
+  expect((await recover([candidate('2020-07-20'),candidate(printed,'other date')])).date).toBeNull();
+});
+it.each(['Due Date','return-by date','Expiry Date','loyalty date'])('rejects old receipt date labeled %s',async label=>{
+  expect((await recover([candidate('2020-07-20',label)])).date).toBeNull();
+});
+it.each(['2020-02-30','2020-13-20','2028-07-20'])('does not repair invalid calendar dates or future years: %s',async printed=>{
+  expect((await recover([candidate(printed)])).date).toBeNull();
+});
+it.each([['INVOICE','invoice date'],['STATEMENT','statement date']])('leaves old %s dates rejected',async(type,label)=>{
+  expect((await recover([candidate('2020-07-20',label)],type)).date).toBeNull();
+});
+it('does not repair an old date without an exact document match',async()=>{
+  expect((await recover([candidate('2020-07-20')],'RECEIPT',false)).date).toBeNull();
 });

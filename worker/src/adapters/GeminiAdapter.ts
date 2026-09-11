@@ -248,10 +248,28 @@ Use confidence_date for transcription confidence only. If no date can be read, r
     const fallbackDate = partialReceipt && raw.date_candidates.filter((c: any) =>
       typeof c?.printed !== 'string' || /\d/.test(c.printed)).length === 1
       ? this.validateDate(`${new Date().getFullYear()}-${partialReceipt[1]!.padStart(2,'0')}-${partialReceipt[2]!.padStart(2,'0')}`) : null;
+    let oldYearFallback: string | null = null;
+    if (target.doc_type === 'RECEIPT' && ranked.length === 1 && raw.date_candidates.filter((c: any) =>
+      typeof c?.printed !== 'string' || /\d/.test(c.printed)).length === 1) {
+      const printed = ranked[0]!.printed.trim();
+      const old = printed.match(/^(?:(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})|(\d{1,2})[\/-](\d{1,2})[\/-](\d{4}|\d{2}))(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);
+      if (old) {
+        const yearText = old[1] ?? old[6]!;
+        const year = Number(yearText.length === 2 ? `20${yearText}` : yearText);
+        const monthDay = `${(old[2] ?? old[4]!).padStart(2,'0')}-${(old[3] ?? old[5]!).padStart(2,'0')}`;
+        const original = `${String(year).padStart(4,'0')}-${monthDay}`;
+        // Only an otherwise-valid calendar date rejected for being too old qualifies.
+        if (year < new Date().getFullYear() - 5 && Number.isFinite(Date.parse(original))
+          && new Date(original).toISOString().slice(0,10) === original) {
+          oldYearFallback = this.validateDate(`${new Date().getFullYear()}-${monthDay}`);
+        }
+      }
+    }
+    const receiptFallbackDate = fallbackDate ?? oldYearFallback;
     const bestRank = Math.max(0, ...ranked.map(c => c.rank));
     const genericReceiptIsAmbiguous = target.doc_type === 'RECEIPT' && bestRank === 1
-      && !fallbackDate && candidates.filter(c => normalize(c.printed) !== null).length !== 1;
-    const selected = ranked.filter(c => c.rank === bestRank && !genericReceiptIsAmbiguous).map(c => ({...c,date:normalize(c.printed) ?? fallbackDate}));
+      && !receiptFallbackDate && candidates.filter(c => normalize(c.printed) !== null).length !== 1;
+    const selected = ranked.filter(c => c.rank === bestRank && !genericReceiptIsAmbiguous).map(c => ({...c,date:normalize(c.printed) ?? receiptFallbackDate}));
     // Conflicting or unreadable top-ranked evidence is not resolved by guessing.
     const dates = new Set(selected.map(c => c.date));
     const chosen = dates.size === 1 && !dates.has(null) ? selected[0] : undefined;
@@ -259,7 +277,7 @@ Use confidence_date for transcription confidence only. If no date can be read, r
       candidates: (Array.isArray(raw.date_candidates) ? raw.date_candidates : []).map((c: any, index: number) => {
         const validShape = c && typeof c.printed === 'string' && typeof c.label === 'string';
         const candidateRank = validShape ? (/^\s*\d{4}\s*$/.test(c.printed) ? 0 : rank(c.label)) : null;
-        const normalized = validShape && raw.matched === true ? normalize(c.printed) ?? (c.printed === ranked[0]?.printed ? fallbackDate : null) : null;
+        const normalized = validShape && raw.matched === true ? normalize(c.printed) ?? (c.printed === ranked[0]?.printed ? receiptFallbackDate : null) : null;
         const reason = raw.matched !== true ? 'document_not_matched'
           : !validShape ? 'invalid_candidate_shape'
           : candidateRank === 0 ? 'label_ineligible_or_standalone_year'
@@ -267,13 +285,14 @@ Use confidence_date for transcription confidence only. If no date can be read, r
           : genericReceiptIsAmbiguous ? 'generic_receipt_date_not_unique'
           : normalized === null ? 'normalization_rejected_or_year_unavailable'
           : !chosen ? 'conflicting_or_unreadable_top_ranked_candidates'
+          : oldYearFallback ? 'accepted_old_year_receipt_fallback_verify'
           : fallbackDate ? 'accepted_current_year_receipt_fallback_verify' : 'accepted';
         return {index,printed:c?.printed ?? null,label:c?.label ?? null,location:c?.location ?? null,
           confidence:c?.confidence_date ?? null,normalized_date:normalized,rank:candidateRank,reason};
       }),
       same_document_years:years,best_rank:bestRank,final_date:chosen?.date ?? null,
     });
-    return { date: chosen?.date ?? null, confidence_date: chosen ? Math.min(this.clampConfidence(chosen.confidence_date), fallbackDate ? 0.5 : 1) : 0,
+    return { date: chosen?.date ?? null, confidence_date: chosen ? Math.min(this.clampConfidence(chosen.confidence_date), oldYearFallback ? 0.4 : fallbackDate ? 0.5 : 1) : 0,
       printed_date: chosen?.printed ?? null, verify_date: true };
     } catch (error) {
       diagnostic('error', {error:error instanceof Error ? error.message : String(error)});
