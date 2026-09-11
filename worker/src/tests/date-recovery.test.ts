@@ -28,7 +28,6 @@ it.each([
   ['07/13/25','2025-07-13'],
   ['07/13/2020',null],
   ['02/30/26',null],
-  ['07/13',null],
   ['unreadable',null],
 ])('normalizes printed evidence %s to %s without today or model normalization',async(printed,date)=>{
   const result=await recover([candidate(printed)]);
@@ -69,7 +68,7 @@ it('returns null for conflicting equally ranked transaction dates',async()=>{
 });
 it('returns null for unreadable source and never inserts the frozen current date',async()=>{
   expect((await recover([])).date).toBeNull();
-  expect((await recover([candidate('09/11')])).date).toBeNull();
+  expect((await recover([candidate('unreadable')])).date).toBeNull();
 });
 
 it.each(['Date/Time','Timestamp','receipt date','transaction time','purchase time','sale date','Date'])('accepts receipt label %s',async label=>{
@@ -111,7 +110,7 @@ it('logs target, complete transcription and per-candidate decisions without sour
 });
 
 it('logs normalization rejection and null selection without changing the result',async()=>{
-  expect((await recover([candidate('07/20')])).date).toBeNull();
+  expect((await recover([candidate('02/30')])).date).toBeNull();
   const logs=vi.mocked(console.info).mock.calls.map(call=>JSON.parse(String(call[0])));
   expect(logs.find(log=>log.stage==='processing')).toMatchObject({final_date:null,candidates:[{normalized_date:null,rank:3,reason:'normalization_rejected_or_year_unavailable'}]});
 });
@@ -119,4 +118,25 @@ it('logs normalization rejection and null selection without changing the result'
 it('keeps recovery working even when diagnostic logging fails',async()=>{
   vi.mocked(console.info).mockImplementation(()=>{throw new Error('Log unavailable');});
   expect((await recover([candidate('07/20/26')])).date).toBe('2026-07-20');
+});
+
+it.each(['transaction date','purchase time','Date','Timestamp'])('uses current year for a single matched receipt MM/DD: %s',async label=>{
+  const result=await recover([candidate('07/20',label)]);
+  expect(result).toEqual({date:'2026-07-20',printed_date:'07/20',confidence_date:0.5,verify_date:true});
+});
+it.each(['07/20/25','07/20/2025'])('never overrides printed year: %s',async printed=>{
+  expect((await recover([candidate(printed)])).date).toBe('2025-07-20');
+});
+it.each(['2025','07/21/25','07/21','2025 and 2026'])('does not guess current year when other visible evidence exists: %s',async printed=>{
+  expect((await recover([candidate('07/20'),candidate(printed,'other printed evidence')])).date).toBeNull();
+});
+it.each(['Due Date','return-by date','Expiry Date','loyalty date'])('never applies MM/DD fallback to %s',async label=>{
+  expect((await recover([candidate('07/20',label)])).date).toBeNull();
+});
+it('requires an exact match and only one eligible receipt candidate',async()=>{
+  expect((await recover([candidate('07/20')],'RECEIPT',false)).date).toBeNull();
+  expect((await recover([candidate('07/20'),candidate('07/21','Timestamp')])).date).toBeNull();
+});
+it.each([['INVOICE','invoice date'],['STATEMENT','statement date']])('keeps undated %s recovery unchanged',async(type,label)=>{
+  expect((await recover([candidate('07/20',label)],type)).date).toBeNull();
 });
