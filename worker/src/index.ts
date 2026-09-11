@@ -232,7 +232,7 @@ export default {
           ${dateRecoveryMatch ? 'WHERE ex.id=?' : 'JOIN ledger_entries le ON le.extraction_id=ex.id AND le.document_id=ex.document_id WHERE le.id=?'}`)
           .bind(decodeURIComponent((dateRecoveryMatch ?? ledgerDateRecoveryMatch)![1]!)).first() as any;
         if (!row) return err('Extraction not found', 404, origin);
-        if (row.date) return json({date:row.date,confidence_date:row.confidence_date,verify_date:row.confidence_date < 0.9},200,origin);
+        if (row.date) return json({date:row.date,confidence_date:row.confidence_date,verify_date:row.confidence_date < 0.8},200,origin);
         if (!row.r2_key) return err('Source not found',404,origin);
         const source = await env.DOCUMENTS.get(row.r2_key);
         if (!source) return err('Source not found',404,origin);

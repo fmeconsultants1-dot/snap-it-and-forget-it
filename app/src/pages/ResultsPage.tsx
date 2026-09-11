@@ -424,7 +424,7 @@ export default function ResultsPage() {
                   placeholder="Vendor or issuer name" />
 
                 <label className="review-label">Date {fe?.date && <span style={{ color:'var(--red)', marginLeft:4 }}>← {fe.date}</span>}</label>
-                {ex?.date && ex.confidence_date < 0.90 && <p style={{ color:'var(--gold)', fontSize:13 }} role="status">Verify date — low confidence ({Math.round(ex.confidence_date * 100)}%). Compare the prefilled date with the original document.</p>}
+                {ex?.date && ex.confidence_date < 0.80 && <p style={{ color:'var(--gold)', fontSize:13 }} role="status">Verify date — low confidence ({Math.round(ex.confidence_date * 100)}%). Compare the prefilled date with the original document.</p>}
                 <input className="review-input" type="date" value={edit.date}
                   style={{ borderColor: fe?.date ? 'var(--red)' : undefined }}
                   onChange={e => updateField(idx, 'date', e.target.value)} />

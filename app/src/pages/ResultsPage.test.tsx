@@ -82,12 +82,12 @@ describe('Bug E review completion', () => {
   });
 });
 
-it('prefills a valid 70% date and visibly asks the user to verify it', () => {
+it.each([0.70, 0.79, 0.80, 0.89, 0.90])('prefills a valid date and verifies only below 80%%: %s', confidence => {
   const result = success();
-  mocked.state.results = [{ ...result, extraction: { ...result.extraction, confidence_date: 0.70 } }];
+  mocked.state.results = [{ ...result, extraction: { ...result.extraction, confidence_date: confidence } }];
   mount();
   expect(tree.root.findAllByType('input').find(n => n.props.type === 'date')?.props.value).toBe('2026-09-08');
-  expect(JSON.stringify(tree.toJSON())).toContain('Verify date');
+  expect(JSON.stringify(tree.toJSON()).includes('Verify date')).toBe(confidence < 0.80);
 });
 
 it('confirms deletion, removes only the selected unapproved item, and leaves other cards available', async () => {
