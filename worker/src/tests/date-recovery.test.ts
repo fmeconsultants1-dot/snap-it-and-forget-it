@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { GeminiAdapter } from '../adapters/GeminiAdapter';
 
-beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-11T12:00:00Z')); });
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-11T12:00:00Z')); vi.spyOn(console,'info').mockImplementation(() => {}); });
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks(); });
 const candidate = (printed: string, label = 'transaction timestamp') => ({printed,label,location:'matching document',confidence_date:0.7});
 async function recover(date_candidates: ReturnType<typeof candidate>[], doc_type='RECEIPT', matched=true) {
   const fetchMock=vi.fn().mockResolvedValue({ok:true,json:async()=>({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify({matched,date_candidates,date:'2020-01-01'})}]}}]})});
@@ -92,4 +92,31 @@ it.each(['INVOICE','STATEMENT'])('does not broaden labels for %s',async type=>{
   for (const label of ['Date','Date/Time','Timestamp']) {
     expect((await recover([candidate('07/20/26',label)],type)).date).toBeNull();
   }
+});
+
+it('logs target, complete transcription and per-candidate decisions without source bytes',async()=>{
+  const input=[candidate('07/20/26','transaction date'),candidate('07/21/26','Timestamp'),candidate('07/30/26','Due Date')];
+  const result=await recover(input);
+  expect(result).toEqual({date:'2026-07-20',confidence_date:0.7,printed_date:'07/20/26',verify_date:true});
+  const logs=vi.mocked(console.info).mock.calls.map(call=>JSON.parse(String(call[0])));
+  expect(new Set(logs.map(log=>log.attemptId)).size).toBe(1);
+  expect(logs[0]).toMatchObject({event:'date-recovery',stage:'start',target:{vendor:'Target vendor',doc_type:'RECEIPT',total:112.34}});
+  expect(logs.find(log=>log.stage==='transcription')).toMatchObject({matched:true,date_candidates:input});
+  expect(logs.find(log=>log.stage==='processing')).toMatchObject({final_date:'2026-07-20',candidates:[
+    {printed:'07/20/26',label:'transaction date',location:'matching document',confidence:0.7,normalized_date:'2026-07-20',rank:3,reason:'accepted'},
+    {normalized_date:'2026-07-21',rank:2,reason:'lower_priority_label'},
+    {normalized_date:'2026-07-30',rank:0,reason:'label_ineligible_or_standalone_year'},
+  ]});
+  expect(JSON.stringify(logs)).not.toContain('original-image');
+});
+
+it('logs normalization rejection and null selection without changing the result',async()=>{
+  expect((await recover([candidate('07/20')])).date).toBeNull();
+  const logs=vi.mocked(console.info).mock.calls.map(call=>JSON.parse(String(call[0])));
+  expect(logs.find(log=>log.stage==='processing')).toMatchObject({final_date:null,candidates:[{normalized_date:null,rank:3,reason:'normalization_rejected_or_year_unavailable'}]});
+});
+
+it('keeps recovery working even when diagnostic logging fails',async()=>{
+  vi.mocked(console.info).mockImplementation(()=>{throw new Error('Log unavailable');});
+  expect((await recover([candidate('07/20/26')])).date).toBe('2026-07-20');
 });

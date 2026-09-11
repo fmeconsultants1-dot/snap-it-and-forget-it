@@ -171,6 +171,13 @@ export class GeminiAdapter {
   }
 
   async recoverDate(imageBase64: string, mimeType: string, target: { vendor: string; doc_type: string; total: number | null }) {
+    const attemptId = crypto.randomUUID();
+    const diagnostic = (stage: string, details: Record<string, unknown>) => {
+      // Temporary Worker-only diagnostics. Never log source bytes or credentials.
+      try { console.info(JSON.stringify({event:'date-recovery',attemptId,stage,target,...details})); } catch {}
+    };
+    diagnostic('start', {});
+    try {
     const response = await fetch(`${this.apiBase}/models/${this.model}:generateContent?key=${this.apiKey}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents: [{ parts: [
@@ -187,8 +194,10 @@ Use confidence_date for transcription confidence only. If no date can be read, r
     if (!response.ok) throw new Error(`Date recovery failed: HTTP ${response.status}`);
     const data = await response.json() as any;
     const candidate = data?.candidates?.[0];
+    diagnostic('response', {finish_reason:candidate?.finishReason ?? null,text:candidate?.content?.parts?.[0]?.text ?? null});
     if (candidate?.finishReason && candidate.finishReason !== 'STOP') throw new Error('Date recovery incomplete');
     const raw = JSON.parse(candidate?.content?.parts?.[0]?.text ?? '{}');
+    diagnostic('transcription', {matched:raw.matched ?? null,date_candidates:raw.date_candidates ?? null});
     const candidates: { printed: string; label: string; location?: string; confidence_date?: number }[] =
       raw.matched === true && Array.isArray(raw.date_candidates)
         ? raw.date_candidates.filter((c: any) => c && typeof c.printed === 'string' && typeof c.label === 'string') : [];
@@ -239,8 +248,30 @@ Use confidence_date for transcription confidence only. If no date can be read, r
     // Conflicting or unreadable top-ranked evidence is not resolved by guessing.
     const dates = new Set(selected.map(c => c.date));
     const chosen = dates.size === 1 && !dates.has(null) ? selected[0] : undefined;
+    diagnostic('processing', {
+      candidates: (Array.isArray(raw.date_candidates) ? raw.date_candidates : []).map((c: any, index: number) => {
+        const validShape = c && typeof c.printed === 'string' && typeof c.label === 'string';
+        const candidateRank = validShape ? (/^\s*\d{4}\s*$/.test(c.printed) ? 0 : rank(c.label)) : null;
+        const normalized = validShape && raw.matched === true ? normalize(c.printed) : null;
+        const reason = raw.matched !== true ? 'document_not_matched'
+          : !validShape ? 'invalid_candidate_shape'
+          : candidateRank === 0 ? 'label_ineligible_or_standalone_year'
+          : candidateRank !== bestRank ? 'lower_priority_label'
+          : genericReceiptIsAmbiguous ? 'generic_receipt_date_not_unique'
+          : normalized === null ? 'normalization_rejected_or_year_unavailable'
+          : !chosen ? 'conflicting_or_unreadable_top_ranked_candidates'
+          : 'accepted';
+        return {index,printed:c?.printed ?? null,label:c?.label ?? null,location:c?.location ?? null,
+          confidence:c?.confidence_date ?? null,normalized_date:normalized,rank:candidateRank,reason};
+      }),
+      same_document_years:years,best_rank:bestRank,final_date:chosen?.date ?? null,
+    });
     return { date: chosen?.date ?? null, confidence_date: chosen ? this.clampConfidence(chosen.confidence_date) : 0,
       printed_date: chosen?.printed ?? null, verify_date: true };
+    } catch (error) {
+      diagnostic('error', {error:error instanceof Error ? error.message : String(error)});
+      throw error;
+    }
   }
 
   async extractDocuments(
