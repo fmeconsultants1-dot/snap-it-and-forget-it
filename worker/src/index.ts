@@ -224,9 +224,13 @@ export default {
         return json({ entries: result.results }, 200, origin);
       }
       const dateRecoveryMatch = path.match(/^\/api\/extractions\/([^/]+)\/recover-date$/);
-      if (dateRecoveryMatch && method === 'POST') {
+      const ledgerDateRecoveryMatch = path.match(/^\/api\/ledger\/([^/]+)\/recover-date$/);
+      if ((dateRecoveryMatch || ledgerDateRecoveryMatch) && method === 'POST') {
+        // Resolve by the unique accounting record, never by the shared source image.
         const row = await env.DB.prepare(`SELECT ex.vendor,ex.issuer,ex.doc_type,ex.total,ex.date,ex.confidence_date,d.r2_key,d.mime_type
-          FROM extractions ex JOIN documents d ON d.id=ex.document_id WHERE ex.id=?`).bind(dateRecoveryMatch[1]!).first() as any;
+          FROM extractions ex JOIN documents d ON d.id=ex.document_id
+          ${dateRecoveryMatch ? 'WHERE ex.id=?' : 'JOIN ledger_entries le ON le.extraction_id=ex.id AND le.document_id=ex.document_id WHERE le.id=?'}`)
+          .bind(decodeURIComponent((dateRecoveryMatch ?? ledgerDateRecoveryMatch)![1]!)).first() as any;
         if (!row) return err('Extraction not found', 404, origin);
         if (row.date) return json({date:row.date,confidence_date:row.confidence_date,verify_date:row.confidence_date < 0.9},200,origin);
         if (!row.r2_key) return err('Source not found',404,origin);

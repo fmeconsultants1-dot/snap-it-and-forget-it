@@ -3,11 +3,11 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import ResultsPage from './ResultsPage';
 
 const mocked = vi.hoisted(() => ({
-  state: {} as any, navigate: vi.fn(), manual: vi.fn(), skip: vi.fn(), approve: vi.fn(), scan: vi.fn(), duplicates: vi.fn(), recoverDate: vi.fn(),
+  state: {} as any, navigate: vi.fn(), manual: vi.fn(), skip: vi.fn(), approve: vi.fn(), scan: vi.fn(), duplicates: vi.fn(), recoverDate: vi.fn(), recoverDateForLedger: vi.fn(),
 }));
 vi.mock('react-router-dom', () => ({ useLocation: () => ({ state: mocked.state }), useNavigate: () => mocked.navigate }));
 vi.mock('../lib/api', () => ({
-  documentApi: { recoverDate: mocked.recoverDate, manual: mocked.manual, skip: mocked.skip },
+  documentApi: { recoverDate: mocked.recoverDate, recoverDateForLedger: mocked.recoverDateForLedger, manual: mocked.manual, skip: mocked.skip },
   ledgerApi: { updateAndApprove: mocked.approve, duplicates: mocked.duplicates }, scanApi: { processDocumentRaw: mocked.scan },
 }));
 vi.mock('../lib/camera', () => ({ fileToCapture: async () => ({ base64: 'replacement', mimeType: 'image/jpeg', fileName: 'new.jpg' }) }));
@@ -117,6 +117,29 @@ it('prefills a missing date from source recovery and marks it for verification',
   const item = success(); mocked.state.results=[{...item,extractionId:'date-test',extraction:{...item.extraction,date:null}}];
   await act(async()=>{mount();});
   expect(mocked.recoverDate).toHaveBeenCalledWith('date-test');
+  expect(mocked.recoverDateForLedger).not.toHaveBeenCalled();
   expect(tree.root.findAllByType('input').find(n=>n.props.type==='date')?.props.value).toBe('2026-07-13');
   expect(JSON.stringify(tree.toJSON())).toContain('Verify date — recovered');
+});
+
+it('recovers by the exact ledger reference when extractionId is missing', async () => {
+  let resolve!: (value: any) => void;
+  mocked.recoverDateForLedger.mockReturnValue(new Promise(r => { resolve = r; }));
+  const item = success();
+  mocked.state.results = [{...item, extraction: {...item.extraction, date: null}}];
+  await act(async () => { mount(); });
+  expect(JSON.stringify(tree.toJSON())).toContain('Reading date from original…');
+  expect(mocked.recoverDateForLedger).toHaveBeenCalledWith('ledger');
+  expect(mocked.recoverDate).not.toHaveBeenCalled();
+  await act(async () => { resolve({date:'2026-06-15', confidence_date:0.8}); });
+  expect(tree.root.findAllByType('input').find(n => n.props.type === 'date')?.props.value).toBe('2026-06-15');
+  expect(JSON.stringify(tree.toJSON())).toContain('Verify date — recovered');
+});
+
+it('visibly reports missing references even when the edit form is closed', async () => {
+  mocked.state.results = [failed()];
+  await act(async () => { mount(); });
+  expect(tree.root.findAllByProps({role:'status'}).some(n => label(n) === 'Date recovery could not start — extraction reference missing.')).toBe(true);
+  expect(mocked.recoverDate).not.toHaveBeenCalled();
+  expect(mocked.recoverDateForLedger).not.toHaveBeenCalled();
 });

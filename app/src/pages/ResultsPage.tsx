@@ -134,11 +134,20 @@ export default function ResultsPage() {
     async function recoverMissingDates() {
       for (let idx = 0; idx < results.length; idx++) {
         const result = results[idx]!;
-        if (!result.extractionId || result.extraction?.date || edits[idx]?.date || result.approved || statuses[idx] === 'done' || statuses[idx] === 'skipped' || dateRecoveryStarted.current.has(result.extractionId)) continue;
-        dateRecoveryStarted.current.add(result.extractionId);
+        if (result.extraction?.date || edits[idx]?.date || result.approved || statuses[idx] === 'done' || statuses[idx] === 'skipped') continue;
+        const recoveryKey = result.extractionId ? `extraction:${result.extractionId}`
+          : result.status === 'DONE' && result.ledgerEntryId ? `ledger:${result.ledgerEntryId}` : null;
+        if (!recoveryKey) {
+          setDateRecovery(prev => ({...prev,[idx]:'Date recovery could not start — extraction reference missing.'}));
+          continue;
+        }
+        if (dateRecoveryStarted.current.has(recoveryKey)) continue;
+        dateRecoveryStarted.current.add(recoveryKey);
         setDateRecovery(prev => ({...prev,[idx]:'Reading date from original…'}));
         try {
-          const candidate = await documentApi.recoverDate(result.extractionId);
+          const candidate = result.extractionId
+            ? await documentApi.recoverDate(result.extractionId)
+            : await documentApi.recoverDateForLedger(result.ledgerEntryId);
 
           if (candidate.date) {
             setEdits(prev => prev.map((edit,i) => i === idx && !edit.date ? {...edit,date:candidate.date!} : edit));
@@ -371,6 +380,7 @@ export default function ResultsPage() {
             </div>
 
             {!isDone && !result.approved && <button className="btn-secondary" disabled={statuses.includes('saving')} onClick={() => removeItem(idx)} style={{ marginTop:10 }}>Delete</button>}
+            {dateRecovery[idx] && <p role="status" style={{color:'var(--gold)',fontSize:13}}>{dateRecovery[idx]}</p>}
             {/* Failed card actions */}
             {isFailed && !isSkipped && (
               <div style={{ marginTop: 12 }}>
@@ -414,7 +424,6 @@ export default function ResultsPage() {
                   placeholder="Vendor or issuer name" />
 
                 <label className="review-label">Date {fe?.date && <span style={{ color:'var(--red)', marginLeft:4 }}>← {fe.date}</span>}</label>
-                {dateRecovery[idx] && <p role="status" style={{color:'var(--gold)',fontSize:13}}>{dateRecovery[idx]}</p>}
                 {ex?.date && ex.confidence_date < 0.90 && <p style={{ color:'var(--gold)', fontSize:13 }} role="status">Verify date — low confidence ({Math.round(ex.confidence_date * 100)}%). Compare the prefilled date with the original document.</p>}
                 <input className="review-input" type="date" value={edit.date}
                   style={{ borderColor: fe?.date ? 'var(--red)' : undefined }}
