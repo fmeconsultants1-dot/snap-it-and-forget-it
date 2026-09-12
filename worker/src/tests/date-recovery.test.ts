@@ -82,8 +82,8 @@ it('prefers transaction date over timestamp and generic date',async()=>{
 it('prefers receipt timestamp over generic date',async()=>{
   expect((await recover([candidate('07/01/26','Date'),candidate('07/20/26','Date/Time')])).date).toBe('2026-07-20');
 });
-it('requires generic date to be the only valid candidate on the receipt',async()=>{
-  expect((await recover([candidate('07/20/26','Date'),candidate('07/21/26','unrelated date')])).date).toBeNull();
+it('requires generic dates to agree and ignores ineligible evidence',async()=>{
+  expect((await recover([candidate('07/20/26','Date'),candidate('07/21/26','unrelated date')])).date).toBe('2026-07-20');
   expect((await recover([candidate('07/20/26','Date'),candidate('unreadable','unrelated date')])).date).toBe('2026-07-20');
 });
 it.each(['INVOICE','STATEMENT'])('does not broaden labels for %s',async type=>{
@@ -127,7 +127,7 @@ it.each(['07/20/25','07/20/2025'])('never overrides printed year: %s',async prin
   expect((await recover([candidate(printed)])).date).toBe('2025-07-20');
 });
 it.each(['07/21/25','07/21','2025 and 2026'])('does not guess current year when other eligible evidence exists: %s',async printed=>{
-  expect((await recover([candidate('07/20'),candidate(printed,'transaction date')])).date).toBeNull();
+  expect((await recover([candidate('07/20'),candidate(printed,'transaction date')])).date).toBe(printed === '07/21/25' ? '2025-07-21' : null);
 });
 it.each(['Due Date','return-by date','Expiry Date','loyalty date'])('never applies MM/DD fallback to %s',async label=>{
   expect((await recover([candidate('07/20',label)])).date).toBeNull();
@@ -157,7 +157,7 @@ it.each(['return policy deadline','Expiry Date','Due Date','return-by date','loy
   expect((await recover([candidate('07/13'),candidate('DEC 10 2020',label)])).date).toBe('2026-07-13');
 });
 it.each(['2020-07-13','2025-07-20','07/21'])('blocks old-year fallback when other eligible date evidence exists: %s',async printed=>{
-  expect((await recover([candidate('2020-07-20'),candidate(printed,'transaction date')])).date).toBeNull();
+  expect((await recover([candidate('2020-07-20'),candidate(printed,'transaction date')])).date).toBe(printed === '2025-07-20' ? printed : null);
 });
 it.each(['Due Date','return-by date','Expiry Date','loyalty date'])('rejects old receipt date labeled %s',async label=>{
   expect((await recover([candidate('2020-07-20',label)])).date).toBeNull();
@@ -212,4 +212,31 @@ it('stops after one unsuccessful MAX_TOKENS retry',async()=>{
 it('rejects complete JSON with incomplete candidate structure',async()=>{
   vi.stubGlobal('fetch',vi.fn().mockResolvedValue(geminiResponse('OTHER',JSON.stringify({matched:true,date_candidates:[{printed:'07/20/26'}]}))));
   await expect(new GeminiAdapter('test').recoverDate('original','image/jpeg',{vendor:'Target',doc_type:'RECEIPT',total:10})).rejects.toMatchObject({code:'DATE_RECOVERY_RESPONSE'});
+});
+
+it.each([
+  [['2026/07/13 14:31:24','26/07/13','14:31','07/21'],'2026-07-13'],
+  [['26/08/13 07:21:24','26/08/13','07:21'],'2026-08-13'],
+  [['26/06/13','26/06/13 11:35:19'],'2026-06-13'],
+  [['07/20/26','11:35:19'],'2026-07-20'],
+  [['26-07-13'],'2026-07-13'],
+  [['26/07/13','26/08/13'],null],
+  [['14:31','07:21','11:35:19'],null],
+])('resolves numeric interpretations and ignores times: %j',async(printed,date)=>{
+  expect((await recover(printed.map(p=>candidate(p)))).date).toBe(date);
+});
+it('keeps ADP period ending and BC Hydro billing date',async()=>{
+  expect((await recover([candidate('08/05/26','PAY DATE'),candidate('07/31/26','PERIOD ENDING')],'STATEMENT')).date).toBe('2026-07-31');
+  expect((await recover([candidate('Jun 15, 2026','billing date'),candidate('Jul 06, 2026','due date')],'INVOICE')).date).toBe('2026-06-15');
+});
+it('requests compact recovery candidates',async()=>{
+  await recover([candidate('26/07/13')]);
+  const body=JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string);
+  expect(body.contents[0].parts[0].text).toContain('Stop after 8 candidates');
+  expect(body.contents[0].parts[0].text).toContain('standalone times');
+  expect(body.generationConfig.maxOutputTokens).toBe(1024);
+});
+it('deduplicates generic dates and rejects different eligible generic dates',async()=>{
+  expect((await recover([candidate('26/07/13','Date'),candidate('2026/07/13','Date'),candidate('14:31','Date')])).date).toBe('2026-07-13');
+  expect((await recover([candidate('26/07/13','Date'),candidate('26/08/13','Date')])).date).toBeNull();
 });
