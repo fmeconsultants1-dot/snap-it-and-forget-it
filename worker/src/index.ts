@@ -276,6 +276,7 @@ export default {
 
     } catch (e: any) {
       console.error('[snap-it]', e);
+      if (e.code === 'DATE_RECOVERY_RESPONSE') return json({error:e.message,recovery_diagnostics:e.recovery_diagnostics},500,origin);
       return err(e.message ?? 'Internal server error', 500, origin);
     }
   },

@@ -95,7 +95,7 @@ it.each(['INVOICE','STATEMENT'])('does not broaden labels for %s',async type=>{
 it('logs target, complete transcription and per-candidate decisions without source bytes',async()=>{
   const input=[candidate('07/20/26','transaction date'),candidate('07/21/26','Timestamp'),candidate('07/30/26','Due Date')];
   const result=await recover(input);
-  expect(result).toEqual({date:'2026-07-20',confidence_date:0.7,printed_date:'07/20/26',verify_date:true});
+  expect(result).toMatchObject({date:'2026-07-20',confidence_date:0.7,printed_date:'07/20/26',verify_date:true});
   const logs=vi.mocked(console.info).mock.calls.map(call=>JSON.parse(String(call[0])));
   expect(new Set(logs.map(log=>log.attemptId)).size).toBe(1);
   expect(logs[0]).toMatchObject({event:'date-recovery',stage:'start',target:{vendor:'Target vendor',doc_type:'RECEIPT',total:112.34}});
@@ -121,7 +121,7 @@ it('keeps recovery working even when diagnostic logging fails',async()=>{
 
 it.each(['transaction date','purchase time','Date','Timestamp'])('uses current year for a single matched receipt MM/DD: %s',async label=>{
   const result=await recover([candidate('07/20',label)]);
-  expect(result).toEqual({date:'2026-07-20',printed_date:'07/20',confidence_date:0.5,verify_date:true});
+  expect(result).toMatchObject({date:'2026-07-20',printed_date:'07/20',confidence_date:0.5,verify_date:true});
 });
 it.each(['07/20/25','07/20/2025'])('never overrides printed year: %s',async printed=>{
   expect((await recover([candidate(printed)])).date).toBe('2025-07-20');
@@ -164,4 +164,46 @@ it.each([['INVOICE','invoice date'],['STATEMENT','statement date']])('leaves old
 });
 it('does not repair an old date without an exact document match',async()=>{
   expect((await recover([candidate('2020-07-20')],'RECEIPT',false)).date).toBeNull();
+});
+
+const completeResponse = JSON.stringify({matched:true,date_candidates:[candidate('07/20/26')]});
+const geminiResponse = (finishReason: string, text: string) => ({ok:true,json:async()=>({candidates:[{finishReason,content:{parts:[{text}]}}]})});
+it.each(['STOP','MAX_TOKENS','OTHER'])('processes complete usable JSON with finishReason %s',async finishReason=>{
+  const fetchMock=vi.fn().mockResolvedValue(geminiResponse(finishReason,completeResponse));
+  vi.stubGlobal('fetch',fetchMock);
+  const result=await new GeminiAdapter('test').recoverDate('original','image/jpeg',{vendor:'Target',doc_type:'RECEIPT',total:10});
+  expect(result.date).toBe('2026-07-20');
+  expect(result.recovery_diagnostics).toEqual([{finishReason,responseText:completeResponse,maxOutputTokens:1024}]);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+it('retries truncated MAX_TOKENS once with a larger budget and succeeds',async()=>{
+  const fetchMock=vi.fn().mockResolvedValueOnce(geminiResponse('MAX_TOKENS','{"matched":true,')).mockResolvedValueOnce(geminiResponse('STOP',completeResponse));
+  vi.stubGlobal('fetch',fetchMock);
+  const result=await new GeminiAdapter('test').recoverDate('original','image/jpeg',{vendor:'Target',doc_type:'RECEIPT',total:10});
+  expect(result.date).toBe('2026-07-20');
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  const bodies=fetchMock.mock.calls.map(call=>JSON.parse(call[1].body));
+  expect(bodies[0].contents).toEqual(bodies[1].contents);
+  expect(bodies.map(body=>body.generationConfig.maxOutputTokens)).toEqual([1024,4096]);
+  expect(result.recovery_diagnostics.map(r=>r.finishReason)).toEqual(['MAX_TOKENS','STOP']);
+});
+it.each(['SAFETY','OTHER','STOP'])('reports exact finishReason and text for unusable JSON: %s',async finishReason=>{
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(geminiResponse(finishReason,'{"matched":')));
+  await expect(new GeminiAdapter('test').recoverDate('original','image/jpeg',{vendor:'Target',doc_type:'RECEIPT',total:10})).rejects.toMatchObject({
+    message:`Date recovery response unusable (finishReason: ${finishReason})`,code:'DATE_RECOVERY_RESPONSE',
+    recovery_diagnostics:[{finishReason,responseText:'{"matched":',maxOutputTokens:1024}],
+  });
+});
+it('stops after one unsuccessful MAX_TOKENS retry',async()=>{
+  const fetchMock=vi.fn().mockResolvedValue(geminiResponse('MAX_TOKENS',''));
+  vi.stubGlobal('fetch',fetchMock);
+  await expect(new GeminiAdapter('test').recoverDate('original','image/jpeg',{vendor:'Target',doc_type:'RECEIPT',total:10})).rejects.toMatchObject({code:'DATE_RECOVERY_RESPONSE',recovery_diagnostics:[
+    {finishReason:'MAX_TOKENS',responseText:'',maxOutputTokens:1024},
+    {finishReason:'MAX_TOKENS',responseText:'',maxOutputTokens:4096},
+  ]});
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+it('rejects complete JSON with incomplete candidate structure',async()=>{
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(geminiResponse('OTHER',JSON.stringify({matched:true,date_candidates:[{printed:'07/20/26'}]}))));
+  await expect(new GeminiAdapter('test').recoverDate('original','image/jpeg',{vendor:'Target',doc_type:'RECEIPT',total:10})).rejects.toMatchObject({code:'DATE_RECOVERY_RESPONSE'});
 });
