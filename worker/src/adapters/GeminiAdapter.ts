@@ -257,16 +257,14 @@ Use confidence_date for transcription confidence only. If no date can be read, r
       return this.validateDate(`${year}-${month.padStart(2,'0')}-${day.padStart(2,'0')}`);
     };
     const ranked = candidates.map(c => ({...c, rank:/^\s*\d{4}\s*$/.test(c.printed) ? 0 : rank(c.label)})).filter(c => c.rank > 0);
-    // Receipt-only legacy fallback: one eligible MM/DD and no other printed numeric evidence.
-    // Any other visible date/year blocks guessing, even if its label is ineligible.
+    // Receipt fallback conflicts count only eligible business-date candidates.
+    // Rejected return, due or expiry dates do not block the single eligible date.
     const partialReceipt = target.doc_type === 'RECEIPT' && ranked.length === 1 && years.length === 0
       ? ranked[0]!.printed.match(/^\s*(\d{1,2})\/(\d{1,2})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*$/) : null;
-    const fallbackDate = partialReceipt && raw.date_candidates.filter((c: any) =>
-      typeof c?.printed !== 'string' || /\d/.test(c.printed)).length === 1
+    const fallbackDate = partialReceipt
       ? this.validateDate(`${new Date().getFullYear()}-${partialReceipt[1]!.padStart(2,'0')}-${partialReceipt[2]!.padStart(2,'0')}`) : null;
     let oldYearFallback: string | null = null;
-    if (target.doc_type === 'RECEIPT' && ranked.length === 1 && raw.date_candidates.filter((c: any) =>
-      typeof c?.printed !== 'string' || /\d/.test(c.printed)).length === 1) {
+    if (target.doc_type === 'RECEIPT' && ranked.length === 1) {
       const printed = ranked[0]!.printed.trim();
       const old = printed.match(/^(?:(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})|(\d{1,2})[\/-](\d{1,2})[\/-](\d{4}|\d{2}))(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);
       if (old) {

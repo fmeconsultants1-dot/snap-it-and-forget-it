@@ -59,7 +59,7 @@ it('uses an explicit year elsewhere on the same matched document for MM/DD',asyn
   expect((await recover([candidate('07/20'),candidate('2026','transaction year')])).date).toBe('2026-07-20');
 });
 it('does not use copyright years or resolve conflicting years by guessing',async()=>{
-  expect((await recover([candidate('07/20'),candidate('2026','copyright year')])).date).toBeNull();
+  expect((await recover([candidate('07/20'),candidate('2025','copyright year')])).date).toBe('2026-07-20');
   expect((await recover([candidate('07/20'),candidate('2026','transaction year'),candidate('2025','transaction year')])).date).toBeNull();
 });
 it('returns null for conflicting equally ranked transaction dates',async()=>{
@@ -126,8 +126,8 @@ it.each(['transaction date','purchase time','Date','Timestamp'])('uses current y
 it.each(['07/20/25','07/20/2025'])('never overrides printed year: %s',async printed=>{
   expect((await recover([candidate(printed)])).date).toBe('2025-07-20');
 });
-it.each(['2025','07/21/25','07/21','2025 and 2026'])('does not guess current year when other visible evidence exists: %s',async printed=>{
-  expect((await recover([candidate('07/20'),candidate(printed,'other printed evidence')])).date).toBeNull();
+it.each(['07/21/25','07/21','2025 and 2026'])('does not guess current year when other eligible evidence exists: %s',async printed=>{
+  expect((await recover([candidate('07/20'),candidate(printed,'transaction date')])).date).toBeNull();
 });
 it.each(['Due Date','return-by date','Expiry Date','loyalty date'])('never applies MM/DD fallback to %s',async label=>{
   expect((await recover([candidate('07/20',label)])).date).toBeNull();
@@ -150,8 +150,14 @@ it.each(['2020-07-20','2020-07-13','07/13/2020'])('offers old-year receipt %s on
 it.each(['2025-07-20','2026-07-20'])('preserves in-range receipt date %s',async printed=>{
   expect((await recover([candidate(printed)])).date).toBe(printed);
 });
-it.each(['2020-07-13','2025-07-20','2026','07/21'])('blocks old-year fallback when other date/year evidence exists: %s',async printed=>{
-  expect((await recover([candidate('2020-07-20'),candidate(printed,'other date')])).date).toBeNull();
+it.each(['return policy deadline','Expiry Date','Due Date','return-by date','loyalty date','member date','copyright','unrelated date'])('ignores ineligible %s when checking receipt fallback conflicts',async label=>{
+  const result=await recover([candidate('2020/07/13 14:30:35'),candidate('DEC 10 2020',label)]);
+  expect(result).toMatchObject({date:'2026-07-13',printed_date:'2020/07/13 14:30:35',verify_date:true});
+  expect(result.confidence_date).toBeLessThanOrEqual(0.4);
+  expect((await recover([candidate('07/13'),candidate('DEC 10 2020',label)])).date).toBe('2026-07-13');
+});
+it.each(['2020-07-13','2025-07-20','07/21'])('blocks old-year fallback when other eligible date evidence exists: %s',async printed=>{
+  expect((await recover([candidate('2020-07-20'),candidate(printed,'transaction date')])).date).toBeNull();
 });
 it.each(['Due Date','return-by date','Expiry Date','loyalty date'])('rejects old receipt date labeled %s',async label=>{
   expect((await recover([candidate('2020-07-20',label)])).date).toBeNull();
