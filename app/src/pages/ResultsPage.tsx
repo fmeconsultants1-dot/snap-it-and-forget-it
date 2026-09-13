@@ -131,7 +131,7 @@ export default function ResultsPage() {
   const [dateRecovery, setDateRecovery] = useState<Record<number, string>>({});
   useEffect(() => {
 
-    async function recoverMissingDates() {
+    function recoverMissingDates() {
       for (let idx = 0; idx < results.length; idx++) {
         const result = results[idx]!;
         if (result.extraction?.date || edits[idx]?.date || result.approved || statuses[idx] === 'done' || statuses[idx] === 'skipped') continue;
@@ -144,6 +144,7 @@ export default function ResultsPage() {
         if (dateRecoveryStarted.current.has(recoveryKey)) continue;
         dateRecoveryStarted.current.add(recoveryKey);
         setDateRecovery(prev => ({...prev,[idx]:'Reading date from original…'}));
+        void (async () => {
         try {
           const candidate = result.extractionId
             ? await documentApi.recoverDate(result.extractionId)
@@ -156,9 +157,10 @@ export default function ResultsPage() {
         } catch {
           setDateRecovery(prev => ({...prev,[idx]:'Date recovery unavailable. Enter the printed date manually.'}));
         }
+        })();
       }
     }
-    void recoverMissingDates();
+    recoverMissingDates();
 
   }, [results]);
 

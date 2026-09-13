@@ -240,3 +240,13 @@ it('deduplicates generic dates and rejects different eligible generic dates',asy
   expect((await recover([candidate('26/07/13','Date'),candidate('2026/07/13','Date'),candidate('14:31','Date')])).date).toBe('2026-07-13');
   expect((await recover([candidate('26/07/13','Date'),candidate('26/08/13','Date')])).date).toBeNull();
 });
+it.each(['INVOICE','STATEMENT'])('preserves the original transcription prompt for %s',async type=>{
+  await recover([],type);
+  const body=JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string);
+  expect(body.contents[0].parts[0].text).toContain('Return EVERY visible date-like string EXACTLY AS PRINTED');
+  expect(body.contents[0].parts[0].text).not.toContain('Stop after 8 candidates');
+});
+it('rejects genuinely ambiguous numeric interpretations',async()=>{
+  vi.setSystemTime(new Date('2008-09-12T12:00:00Z'));
+  expect((await recover([candidate('07/06/08')])).date).toBeNull();
+});

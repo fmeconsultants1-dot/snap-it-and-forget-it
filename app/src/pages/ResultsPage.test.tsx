@@ -143,3 +143,19 @@ it('visibly reports missing references even when the edit form is closed', async
   expect(mocked.recoverDate).not.toHaveBeenCalled();
   expect(mocked.recoverDateForLedger).not.toHaveBeenCalled();
 });
+
+it('starts Canadian Tire while an earlier recovery is pending and preserves manual input', async () => {
+  const pending = new Map<string,(value:any)=>void>();
+  mocked.recoverDate.mockImplementation((id:string)=>new Promise(resolve=>pending.set(id,resolve)));
+  const item=success();
+  mocked.state.results=['slow','canadian-tire'].map((id)=>({...item,extractionId:id,ledgerEntryId:id,extraction:{...item.extraction,date:null}}));
+  mount();
+  expect(mocked.recoverDate.mock.calls.map(c=>c[0])).toEqual(['slow','canadian-tire']);
+  act(()=>tree.root.findAllByType('input').find(n=>n.props.type==='date')!.props.onChange({target:{value:'2026-09-01'}}));
+  await act(async()=>{pending.get('canadian-tire')!({date:'2026-07-13',confidence_date:0.4,verify_date:true});});
+  expect(JSON.parse(sessionStorage.getItem('snap-review:run')!).edits[1].date).toBe('2026-07-13');
+  await act(async()=>{pending.get('slow')!({date:'2026-08-13',confidence_date:0.95});});
+  expect(tree.root.findAllByType('input').find(n=>n.props.type==='date')!.props.value).toBe('2026-09-01');
+  expect(mocked.recoverDate).toHaveBeenCalledTimes(2);
+  expect(JSON.stringify(tree.toJSON())).toContain('Verify date — recovered from original (40%)');
+});
