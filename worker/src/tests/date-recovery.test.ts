@@ -5,7 +5,12 @@ beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-11T12:
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); vi.restoreAllMocks(); });
 const candidate = (printed: string, label = 'transaction timestamp') => ({printed,label,location:'matching document',confidence_date:0.7});
 async function recover(date_candidates: ReturnType<typeof candidate>[], doc_type='RECEIPT', matched=true) {
-  const fetchMock=vi.fn().mockResolvedValue({ok:true,json:async()=>({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify({matched,date_candidates,date:'2020-01-01'})}]}}]})});
+  const fetchMock=vi.fn().mockImplementation(async (_url, options)=>{
+    const prompt=JSON.parse(options.body).contents[0].parts[0].text;
+    const field=prompt.match(/Go only to this field: (.*)\n/);
+    const raw=field ? {matched:true,printed:JSON.parse(field[1]).selected_printed} : {matched,date_candidates,date:'2020-01-01'};
+    return {ok:true,status:200,json:async()=>({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(raw)}]}}]})};
+  });
   vi.stubGlobal('fetch',fetchMock);
   const target={vendor:'Target vendor',doc_type,total:112.34};
   const result=await new GeminiAdapter('test').recoverDate('original-image','image/png',target);
@@ -175,22 +180,22 @@ it('does not repair an old date without an exact document match',async()=>{
 const completeResponse = JSON.stringify({matched:true,date_candidates:[candidate('07/20/26')]});
 const geminiResponse = (finishReason: string, text: string) => ({ok:true,json:async()=>({candidates:[{finishReason,content:{parts:[{text}]}}]})});
 it.each(['STOP','MAX_TOKENS','OTHER'])('processes complete usable JSON with finishReason %s',async finishReason=>{
-  const fetchMock=vi.fn().mockResolvedValue(geminiResponse(finishReason,completeResponse));
+  const fetchMock=vi.fn().mockResolvedValueOnce(geminiResponse(finishReason,completeResponse)).mockResolvedValue(geminiResponse('STOP',JSON.stringify({matched:true,printed:'07/20/26'})));
   vi.stubGlobal('fetch',fetchMock);
   const result=await new GeminiAdapter('test').recoverDate('original','image/jpeg',{vendor:'Target',doc_type:'RECEIPT',total:10});
   expect(result.date).toBe('2026-07-20');
   expect(result.recovery_diagnostics).toEqual([{finishReason,responseText:completeResponse,maxOutputTokens:1024}]);
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 it('retries truncated MAX_TOKENS once with a larger budget and succeeds',async()=>{
-  const fetchMock=vi.fn().mockResolvedValueOnce(geminiResponse('MAX_TOKENS','{"matched":true,')).mockResolvedValueOnce(geminiResponse('STOP',completeResponse));
+  const fetchMock=vi.fn().mockResolvedValueOnce(geminiResponse('MAX_TOKENS','{"matched":true,')).mockResolvedValueOnce(geminiResponse('STOP',completeResponse)).mockResolvedValue(geminiResponse('STOP',JSON.stringify({matched:true,printed:'07/20/26'})));
   vi.stubGlobal('fetch',fetchMock);
   const result=await new GeminiAdapter('test').recoverDate('original','image/jpeg',{vendor:'Target',doc_type:'RECEIPT',total:10});
   expect(result.date).toBe('2026-07-20');
-  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(fetchMock).toHaveBeenCalledTimes(3);
   const bodies=fetchMock.mock.calls.map(call=>JSON.parse(call[1].body));
   expect(bodies[0].contents).toEqual(bodies[1].contents);
-  expect(bodies.map(body=>body.generationConfig.maxOutputTokens)).toEqual([1024,4096]);
+  expect(bodies.slice(0,2).map(body=>body.generationConfig.maxOutputTokens)).toEqual([1024,4096]);
   expect(result.recovery_diagnostics.map(r=>r.finishReason)).toEqual(['MAX_TOKENS','STOP']);
 });
 it.each(['SAFETY','OTHER','STOP'])('reports exact finishReason and text for unusable JSON: %s',async finishReason=>{
@@ -249,4 +254,53 @@ it.each(['INVOICE','STATEMENT'])('preserves the original transcription prompt fo
 it('rejects genuinely ambiguous numeric interpretations',async()=>{
   vi.setSystemTime(new Date('2008-09-12T12:00:00Z'));
   expect((await recover([candidate('07/06/08')])).date).toBeNull();
+});
+
+async function verifiedRecovery(printed:string, verify:string|null, tie?:string|null, type='RECEIPT', label='transaction timestamp', extra:ReturnType<typeof candidate>[] = []) {
+  const mock=vi.fn().mockResolvedValueOnce(geminiResponse('STOP',JSON.stringify({matched:true,date_candidates:[candidate(printed,label),...extra]})))
+    .mockResolvedValueOnce(geminiResponse('STOP',JSON.stringify({matched:true,printed:verify})));
+  if(tie !== undefined) mock.mockResolvedValueOnce(geminiResponse('STOP',JSON.stringify({matched:true,printed:tie})));
+  vi.stubGlobal('fetch',mock);
+  const result=await new GeminiAdapter('test').recoverDate('same-source','image/jpeg',{vendor:'Exact vendor',doc_type:type,total:72.05});
+  const bodies=mock.mock.calls.map(c=>JSON.parse(c[1].body));
+  for(const body of bodies.slice(1)) {
+    expect(body.contents[0].parts[1]).toEqual(bodies[0].contents[0].parts[1]);
+    expect(body.contents[0].parts[0].text).toContain(JSON.stringify({target:{vendor:'Exact vendor',doc_type:type,total:72.05},label,location:'matching document',selected_printed:printed}));
+    expect(body.contents[0].parts[0].text).toContain('Do not enumerate dates');
+  }
+  if(bodies.length===3) expect(bodies[2].contents).toEqual(bodies[1].contents);
+  return {result,mock};
+}
+it('verifies an old-year transaction and retains receipt fallback and exclusion',async()=>{
+  const {result,mock}=await verifiedRecovery('2020/07/13','2020/07/13',undefined,'RECEIPT','transaction timestamp',[candidate('DEC 10 2020','return deadline')]);
+  expect(result).toMatchObject({date:'2026-07-13',confidence_date:0.4,verify_date:true});
+  expect(mock).toHaveBeenCalledTimes(2);
+});
+it('uses two agreeing verification readings instead of the first receipt month',async()=>{
+  const {result,mock}=await verifiedRecovery('2020/08/13','2020/07/13','2020/07/13');
+  expect(result).toMatchObject({date:'2026-07-13',confidence_date:0.4,printed_date:'2020/07/13',verify_date:true});
+  expect(mock).toHaveBeenCalledTimes(3);
+});
+it('verifies ADP period ending by majority without changing field',async()=>{
+  const {result}=await verifiedRecovery('07/04/26','07/31/26','07/31/26','STATEMENT','period ending');
+  expect(result).toMatchObject({date:'2026-07-31',confidence_date:0.4,verify_date:true});
+});
+it('returns null for three different readings',async()=>{
+  expect((await verifiedRecovery('07/13/26','08/13/26','06/13/26')).result.date).toBeNull();
+});
+it('accepts two agreeing readings with two calls',async()=>{
+  const {result,mock}=await verifiedRecovery('26/07/13 14:31','2026/07/13');
+  expect(result.date).toBe('2026-07-13'); expect(mock).toHaveBeenCalledTimes(2);
+});
+it('uses one tie break after unreadable verification and never counts null as agreement',async()=>{
+  expect((await verifiedRecovery('07/13/26',null,'07/13/26')).result.date).toBe('2026-07-13');
+  expect((await verifiedRecovery('07/13/26',null,null)).result).toMatchObject({date:null,confidence_date:0,verify_date:true});
+});
+it('rejects unmatched or malformed verification without approving the first reading',async()=>{
+  const mock=vi.fn().mockResolvedValueOnce(geminiResponse('STOP',completeResponse))
+    .mockResolvedValueOnce(geminiResponse('STOP',JSON.stringify({matched:false,printed:'07/20/26'})))
+    .mockResolvedValueOnce(geminiResponse('MAX_TOKENS','{"matched":'));
+  vi.stubGlobal('fetch',mock);
+  const result=await new GeminiAdapter('test').recoverDate('same','image/jpeg',{vendor:'Exact',doc_type:'RECEIPT',total:10});
+  expect(result.date).toBeNull(); expect(mock).toHaveBeenCalledTimes(3);
 });
