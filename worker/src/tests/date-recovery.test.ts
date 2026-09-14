@@ -8,7 +8,8 @@ async function recover(date_candidates: ReturnType<typeof candidate>[], doc_type
   const fetchMock=vi.fn().mockImplementation(async (_url, options)=>{
     const prompt=JSON.parse(options.body).contents[0].parts[0].text;
     const field=prompt.match(/Go only to this field: (.*)\n/);
-    const raw=field ? {matched:true,printed:JSON.parse(field[1]).selected_printed} : {matched,date_candidates,date:'2020-01-01'};
+    // Verification uses fixture evidence for the requested field, never a date from the request.
+    const raw=field ? {matched:true,printed:date_candidates.find(c=>c.label===JSON.parse(field[1]).label)?.printed ?? null} : {matched,date_candidates,date:'2020-01-01'};
     return {ok:true,status:200,json:async()=>({candidates:[{finishReason:'STOP',content:{parts:[{text:JSON.stringify(raw)}]}}]})};
   });
   vi.stubGlobal('fetch',fetchMock);
@@ -265,7 +266,13 @@ async function verifiedRecovery(printed:string, verify:string|null, tie?:string|
   const bodies=mock.mock.calls.map(c=>JSON.parse(c[1].body));
   for(const body of bodies.slice(1)) {
     expect(body.contents[0].parts[1]).toEqual(bodies[0].contents[0].parts[1]);
-    expect(body.contents[0].parts[0].text).toContain(JSON.stringify({target:{vendor:'Exact vendor',doc_type:type,total:72.05},label,location:'matching document',selected_printed:printed}));
+    expect(body.contents[0].parts[0].text).toContain(JSON.stringify({vendor:'Exact vendor',doc_type:type,total:72.05,label,location:'matching document'}));
+    const request=JSON.stringify(body);
+    expect(request).not.toContain('selected_printed');
+    for(const reading of [printed,verify,tie,result.date]) {
+      if(reading) expect(request).not.toContain(reading);
+    }
+    expect(request).toContain('Do not use prior extraction values');
     expect(body.contents[0].parts[0].text).toContain('Do not enumerate dates');
   }
   if(bodies.length===3) expect(bodies[2].contents).toEqual(bodies[1].contents);
