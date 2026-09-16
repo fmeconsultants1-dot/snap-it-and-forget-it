@@ -326,6 +326,24 @@ export class ScanService {
 
       for (let idx = 0; idx < docsToProcess.length; idx++) {
         const extraction = docsToProcess[idx]!;
+        if (extraction.date === null && ['RECEIPT', 'INVOICE', 'STATEMENT'].includes(extraction.doc_type)) {
+          try {
+            // One transcription, no verification rereads: persist the review candidate once.
+            const recovered = await this.gemini.recoverDate(params.imageBase64, params.mimeType,
+              { vendor: extraction.vendor || extraction.issuer || '', doc_type: extraction.doc_type, total: extraction.total },
+              { singlePass: true });
+            if (recovered.date) {
+              extraction.date = recovered.date;
+              extraction.confidence_date = Math.min(recovered.confidence_date, 0.40);
+              extraction.raw_fields = { ...extraction.raw_fields, date_review_candidate: {
+                source: 'DATE_RECOVERY', date: recovered.date, confidence: extraction.confidence_date,
+                printed_date: recovered.printed_date ?? null, verify_required: true,
+              } };
+            }
+          } catch {
+            // A date-only failure must not discard an otherwise extracted document.
+          }
+        }
         totalAmount += extraction.total ?? 0;
 
         const extractionId = generateId();

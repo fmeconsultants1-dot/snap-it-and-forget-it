@@ -333,3 +333,15 @@ it.each(['http','timeout'])('keeps Canadian Tire after verification %s failure',
   expect(await new GeminiAdapter('test').recoverDate('same','image/jpeg',{vendor:'Canadian Tire',doc_type:'RECEIPT',total:72.05}))
     .toMatchObject({date:'2026-07-13',confidence_date:0.4,verify_date:true});
 });
+
+it('scan single-pass mode uses one transcription without verification rereads',async()=>{
+  const mock=vi.fn().mockResolvedValue(geminiResponse('STOP',completeResponse));vi.stubGlobal('fetch',mock);
+  const result=await new GeminiAdapter('test').recoverDate('original','image/jpeg',{vendor:'Target',doc_type:'RECEIPT',total:10},{singlePass:true});
+  expect(result.date).toBe('2026-07-20');expect(mock).toHaveBeenCalledTimes(1);expect(result.verification_diagnostics).toEqual([]);
+  expect(JSON.parse(mock.mock.calls[0]![1].body).generationConfig.maxOutputTokens).toBe(4096);
+});
+it('scan single-pass mode never retries a truncated transcription',async()=>{
+  const mock=vi.fn().mockResolvedValue(geminiResponse('MAX_TOKENS','{"matched":'));vi.stubGlobal('fetch',mock);
+  await expect(new GeminiAdapter('test').recoverDate('original','image/jpeg',{vendor:'Target',doc_type:'RECEIPT',total:10},{singlePass:true})).rejects.toMatchObject({code:'DATE_RECOVERY_RESPONSE'});
+  expect(mock).toHaveBeenCalledTimes(1);
+});

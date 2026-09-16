@@ -159,3 +159,12 @@ it('starts Canadian Tire while an earlier recovery is pending and preserves manu
   expect(mocked.recoverDate).toHaveBeenCalledTimes(2);
   expect(JSON.stringify(tree.toJSON())).toContain('Verify date — recovered from original (40%)');
 });
+
+it('immediately displays a scan-supplied review candidate without post-render recovery',async()=>{
+  const item=success();mocked.state.results=[{...item,extractionId:'scan-date',extraction:{...item.extraction,date:'2026-07-13',confidence_date:0.4,raw_fields:{date_review_candidate:{source:'DATE_RECOVERY',verify_required:true}}}}];
+  await act(async()=>{mount();});
+  expect(mocked.recoverDate).not.toHaveBeenCalled();expect(mocked.recoverDateForLedger).not.toHaveBeenCalled();
+  expect(tree.root.findAllByType('input').find(n=>n.props.type==='date')?.props.value).toBe('2026-07-13');
+  expect(JSON.stringify(tree.toJSON())).toContain('Verify date');
+  expect(JSON.parse(sessionStorage.getItem('snap-review:run')!).edits[0].date).toBe('2026-07-13');
+});
