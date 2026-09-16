@@ -292,8 +292,8 @@ it('verifies ADP period ending by majority without changing field',async()=>{
   const {result}=await verifiedRecovery('07/04/26','07/31/26','07/31/26','STATEMENT','period ending');
   expect(result).toMatchObject({date:'2026-07-31',confidence_date:0.4,verify_date:true});
 });
-it('returns null for three different readings',async()=>{
-  expect((await verifiedRecovery('07/13/26','08/13/26','06/13/26')).result.date).toBeNull();
+it('retains the deterministic date at low confidence for three different readings',async()=>{
+  expect((await verifiedRecovery('07/13/26','08/13/26','06/13/26')).result).toMatchObject({date:'2026-07-13',confidence_date:0.4,verify_date:true});
 });
 it('accepts two agreeing readings with two calls',async()=>{
   const {result,mock}=await verifiedRecovery('26/07/13 14:31','2026/07/13');
@@ -301,13 +301,35 @@ it('accepts two agreeing readings with two calls',async()=>{
 });
 it('uses one tie break after unreadable verification and never counts null as agreement',async()=>{
   expect((await verifiedRecovery('07/13/26',null,'07/13/26')).result.date).toBe('2026-07-13');
-  expect((await verifiedRecovery('07/13/26',null,null)).result).toMatchObject({date:null,confidence_date:0,verify_date:true});
+  expect((await verifiedRecovery('07/13/26',null,null)).result).toMatchObject({date:'2026-07-13',confidence_date:0.4,verify_date:true});
 });
-it('rejects unmatched or malformed verification without approving the first reading',async()=>{
+it('retains the selected date for review after unmatched or malformed verification',async()=>{
   const mock=vi.fn().mockResolvedValueOnce(geminiResponse('STOP',completeResponse))
     .mockResolvedValueOnce(geminiResponse('STOP',JSON.stringify({matched:false,printed:'07/20/26'})))
     .mockResolvedValueOnce(geminiResponse('MAX_TOKENS','{"matched":'));
   vi.stubGlobal('fetch',mock);
   const result=await new GeminiAdapter('test').recoverDate('same','image/jpeg',{vendor:'Exact',doc_type:'RECEIPT',total:10});
-  expect(result.date).toBeNull(); expect(mock).toHaveBeenCalledTimes(3);
+  expect(result).toMatchObject({date:'2026-07-20',confidence_date:0.4,verify_date:true}); expect(mock).toHaveBeenCalledTimes(3);
+});
+
+it.each([
+  ['2020/07/13','RECEIPT','transaction timestamp','2026-07-13',[]],
+  ['2026/07/13','RECEIPT','transaction timestamp','2026-07-13',[candidate('26/07/13')]],
+  ['26/08/13','RECEIPT','transaction timestamp','2026-08-13',[]],
+  ['26/06/13','RECEIPT','transaction timestamp','2026-06-13',[]],
+  ['07/31/26','STATEMENT','period ending','2026-07-31',[]],
+  ['06/15/26','INVOICE','invoice date','2026-06-15',[]],
+])('keeps deterministic %s when verification is unavailable',async(printed,type,label,date,extra)=>{
+  const {result}=await verifiedRecovery(printed,null,null,type,label,extra);
+  expect(result).toMatchObject({date,confidence_date:0.4,verify_date:true});
+  const logs=vi.mocked(console.info).mock.calls.map(call=>JSON.parse(String(call[0])));
+  expect(logs.find(log=>log.stage==='verification')).toMatchObject({reason:'verification_unavailable',final_date:date});
+});
+it.each(['http','timeout'])('keeps Canadian Tire after verification %s failure',async failure=>{
+  const mock=vi.fn().mockResolvedValueOnce(geminiResponse('STOP',JSON.stringify({matched:true,date_candidates:[candidate('2020/07/13')]})));
+  if(failure==='http') mock.mockResolvedValue({ok:false,status:503});
+  else mock.mockRejectedValue(new Error('Verification timeout'));
+  vi.stubGlobal('fetch',mock);
+  expect(await new GeminiAdapter('test').recoverDate('same','image/jpeg',{vendor:'Canadian Tire',doc_type:'RECEIPT',total:72.05}))
+    .toMatchObject({date:'2026-07-13',confidence_date:0.4,verify_date:true});
 });

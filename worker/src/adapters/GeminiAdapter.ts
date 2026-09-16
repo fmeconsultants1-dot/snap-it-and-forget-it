@@ -362,11 +362,13 @@ If the target document/field cannot be matched: {"matched":false,"printed":null}
       readings.push(await verifyField());
       if (!readings[1]!.date || readings[1]!.date !== readings[0]!.date) readings.push(await verifyField());
     }
-    const accepted = readings.find(r=>r.date !== null && readings.filter(other=>other.date === r.date).length >= 2);
+    const accepted = readings.find(r=>r.date !== null && readings.filter(other=>other.date === r.date).length >= 2) ?? readings[0];
     const confidence = accepted && chosen ? Math.min(this.clampConfidence(chosen.confidence_date),
       ...readings.filter(r=>r.date === accepted.date).map(r=>r.cap),readings.length === 3 ? 0.4 : 1) : 0;
     diagnostic('verification',{field:chosen ? {label:chosen.label,location:chosen.location} : null,
-      readings,attempts:verificationDiagnostics,final_date:accepted?.date ?? null});
+      readings,attempts:verificationDiagnostics,final_date:accepted?.date ?? null,
+      reason:!chosen ? 'no_deterministic_date' : readings.slice(1).some(r=>r.date === null) ? 'verification_unavailable'
+        : readings.slice(1).some(r=>r.date !== readings[0]!.date) ? 'verification_disagreement' : 'verification_confirmed'});
     return {date:accepted?.date ?? null,confidence_date:confidence,printed_date:accepted?.printed ?? null,
       verify_date:true,recovery_diagnostics:recoveryResponses,verification_diagnostics:verificationDiagnostics};
     } catch (error) {
